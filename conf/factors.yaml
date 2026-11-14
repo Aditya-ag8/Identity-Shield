@@ -1,0 +1,72 @@
+# Variant factors for Module 4.
+#
+# Five axes, matching the five change types in the SDLC diagram:
+# who / where / which tool / timing / API settings.
+#
+# Each level carries a `cloudtrail_surface` note: the fields a rule could
+# actually key on. A level with no observable surface is not a valid variant,
+# which is what the validity gate in Module 5 enforces.
+
+factors:
+  identity_context:
+    description: Which principal performs the action.
+    levels:
+      iam_user:            "Long-term IAM user credentials."
+      assumed_role:        "STS session from an in-account role."
+      instance_profile:    "Credentials obtained from EC2 instance metadata."
+      federated_session:   "Role session with a federated/SSO source identity."
+    cloudtrail_surface:
+      - userIdentity.type
+      - userIdentity.arn
+      - userIdentity.sessionContext
+      - userIdentity.invokedBy
+
+  network_origin:
+    description: Where the request enters AWS from.
+    levels:
+      nat_a:               "Lab VPC NAT gateway A (elastic IP 1)."
+      nat_b:               "Lab VPC NAT gateway B (elastic IP 2)."
+      service_mediated:    "Invoked via Lambda/ECS/CloudFormation so sourceIPAddress is a service principal."
+      alternate_endpoint:  "Regional endpoint different from the resource region."
+    cloudtrail_surface:
+      - sourceIPAddress
+      - awsRegion
+      - userIdentity.invokedBy
+
+  client_tool:
+    description: Which client produced the request.
+    levels:
+      boto3_default:       "boto3 with the stock botocore user agent."
+      aws_cli:             "AWS CLI v2 user agent."
+      terraform:           "Terraform AWS provider user agent."
+      non_sdk_http:        "Hand-rolled SigV4 client, custom user agent."
+    cloudtrail_surface:
+      - userAgent
+
+  timing:
+    description: When the action is performed relative to baseline activity.
+    levels:
+      business_hours:      "Inside 09:00-17:00 in the account timezone."
+      off_hours:           "Outside business hours."
+      burst:               "All API calls within 10 seconds."
+      spread:              "Calls spaced more than 10 minutes apart."
+    cloudtrail_surface:
+      - eventTime
+
+  api_form:
+    description: How the API call itself is shaped.
+    levels:
+      canonical:           "The technique's reference call, default parameters."
+      alternative_api:     "A different API reaching the same objective."
+      extra_parameters:    "Optional parameters supplied that the reference call omits."
+      batched:             "Paginated / looped over many resources."
+      hostile_identifier:  "Attacker-typical naming (e.g. TempAdmin) instead of conventional naming."
+    cloudtrail_surface:
+      - eventName
+      - requestParameters.userName
+      - requestParameters.roleName
+      - requestParameters.policyName
+      - requestParameters.maxResults
+
+# Levels that cannot be combined with a given technique are declared there, in
+# techniques.yaml under `excluded_levels`, and passed to allpairspy's filter_func.

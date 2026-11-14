@@ -1,0 +1,32 @@
+title: AWS Instance Role Used From The CLI
+id: 5f0b7a1e-1c2d-4a3b-9e8f-0a1b2c3d4e07
+status: test
+description: >
+  Detects the hallmark of stolen instance-metadata credentials: an EC2 instance
+  role being used by an interactive CLI client. AWS logs no IMDS access at all,
+  so this is the only handle on T1552.005. Round-1 rule: requires GetCallerIdentity
+  specifically, and the aws-cli user agent.
+references:
+  - https://attack.mitre.org/techniques/T1552/005/
+author: Identity Shield
+date: 2026/11/03
+tags:
+  - attack.credential-access
+  - attack.t1552.005
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection_role:
+    userIdentity.arn|contains: ':assumed-role/is-ec2-role/'
+  selection_call:
+    eventName: GetCallerIdentity
+    userAgent|contains: aws-cli
+  condition: selection_role and selection_call
+fields:
+  - userIdentity.arn
+  - sourceIPAddress
+  - userAgent
+falsepositives:
+  - Break-glass debugging from an instance
+level: high

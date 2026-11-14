@@ -1,0 +1,38 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "IAMUser",
+    "principalId": "AIDAISLABUSER0001",
+    "arn": "arn:aws:iam::123456789012:user/is-backup-ops",
+    "accountId": "123456789012",
+    "accessKeyId": "AKIAISLABUSER0001",
+    "userName": "is-backup-ops"
+  },
+  "eventTime": "2026-11-03T23:58:40Z",
+  "eventSource": "signin.amazonaws.com",
+  "eventName": "ConsoleLogin",
+  "awsRegion": "us-east-1",
+  "sourceIPAddress": "81.2.69.142",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "requestParameters": null,
+  "responseElements": {
+    "ConsoleLogin": "Success"
+  },
+  "requestID": "15D9FB32E828F5E77679E6D3C21D33CA",
+  "eventID": "dbdea18e1179972762f7329730584b9a",
+  "readOnly": false,
+  "eventType": "AwsConsoleSignIn",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "additionalEventData": {
+    "MobileVersion": "No",
+    "MFAUsed": "No",
+    "LoginTo": "https://console.aws.amazon.com/console/home"
+  },
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "signin.eu-west-1.amazonaws.com"
+  }
+}

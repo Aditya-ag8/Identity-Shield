@@ -1,0 +1,50 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISFEDROLE0001:aditya@example.edu",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-sso-role/aditya@example.edu",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISFEDSESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISFEDROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-sso-role",
+        "accountId": "123456789012",
+        "userName": "is-sso-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "true",
+        "creationDate": "2026-11-03T09:05:02Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T03:41:57Z",
+  "eventSource": "iam.amazonaws.com",
+  "eventName": "GetAccountAuthorizationDetails",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "81.2.69.142",
+  "userAgent": "Boto3/1.34.49 md/Botocore#1.34.49 ua/2.0 os/windows#10 md/arch#amd64 lang/python#3.11.9",
+  "requestParameters": {
+    "filter": [
+      "User",
+      "Role",
+      "Group",
+      "LocalManagedPolicy"
+    ]
+  },
+  "responseElements": null,
+  "requestID": "592BBB8C13771E7DA9A633099E5D8234",
+  "eventID": "0ef0e79579b77bbbd8e57f7a51d30ed6",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "iam.eu-west-1.amazonaws.com"
+  }
+}

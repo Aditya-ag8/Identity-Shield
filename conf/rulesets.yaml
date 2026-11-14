@@ -1,0 +1,33 @@
+# Rule set registry.
+#
+# Pre-registration matters: baseline-v1 must be frozen (`frozen_at` set) BEFORE
+# any variant result is inspected, otherwise the round-2 "improvement" claim is
+# just overfitting to the test set.
+
+rulesets:
+  baseline-v1:
+    description: >
+      Round-1 rule set. Sigma rules in conf/rules/baseline plus the authored
+      Python rules in identity_shield.detect.python_rules. Frozen before the
+      first variant is evaluated against the round-2 rule set.
+    sigma_dirs:
+      - conf/rules/baseline
+    include_python_rules: true
+    source: mixed
+    frozen_at: null
+
+  improved-v1:
+    description: >
+      Round-2 rule set, authored after analysing misses on the training split.
+      Must generalise on field sets rather than specific values.
+    sigma_dirs:
+      - conf/rules/improved
+    include_python_rules: true
+    source: mixed
+    frozen_at: null
+
+# Optional: vendored community corpus, used only for the compile-rate report.
+# Pull with scripts/pull_sigma.ps1. Not part of any rule set by default.
+community:
+  root: vendor/sigma/rules/cloud/aws
+  purpose: compile-rate measurement only

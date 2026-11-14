@@ -1,0 +1,50 @@
+# Fixture expectations.
+#
+# `expected_detected` is the assertion the replay CLI and test suite check:
+#   1 = at least one rule in the rule set must fire on this fixture
+#   0 = no rule may fire
+#
+# These are expectations about OUR round-1 rule set, not about whether the
+# activity is "really" detectable. `hard` fixtures are the ones we deliberately
+# expect the round-1 rules to miss; they become the M6 work list.
+
+fixtures:
+  # T1087.004 Cloud Account Discovery
+  T1087.004/catch: 1
+  T1087.004/obvious: 1
+  T1087.004/hard: 0
+
+  # T1526 Cloud Service Discovery
+  T1526/catch: 1
+  T1526/obvious: 1
+  T1526/hard: 0
+
+  # T1580 Cloud Infrastructure Discovery
+  T1580/catch: 1
+  T1580/obvious: 1
+  T1580/hard: 0
+
+  # T1078.004 Valid Accounts - Cloud Accounts
+  T1078.004/catch: 1
+  T1078.004/obvious: 1
+  T1078.004/hard: 0
+
+  # T1098.001 Additional Cloud Credentials
+  T1098.001/catch: 1
+  T1098.001/obvious: 1
+  T1098.001/hard: 0
+
+  # T1098.003 Additional Cloud Roles
+  T1098.003/catch: 1
+  T1098.003/obvious: 1
+  T1098.003/hard: 0
+
+  # T1552.005 Cloud Instance Metadata API
+  T1552.005/catch: 1
+  T1552.005/obvious: 1
+  T1552.005/hard: 0
+
+  # T1530 Data from Cloud Storage
+  T1530/catch: 1
+  T1530/obvious: 1
+  T1530/hard: 0

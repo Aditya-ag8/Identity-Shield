@@ -1,0 +1,38 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "IAMUser",
+    "principalId": "AIDAISLABUSER0001",
+    "arn": "arn:aws:iam::123456789012:user/is-operator",
+    "accountId": "123456789012",
+    "accessKeyId": "AKIAISLABUSER0001",
+    "userName": "is-operator"
+  },
+  "eventTime": "2026-11-03T11:04:55Z",
+  "eventSource": "signin.amazonaws.com",
+  "eventName": "ConsoleLogin",
+  "awsRegion": "us-east-1",
+  "sourceIPAddress": "52.94.13.7",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "requestParameters": null,
+  "responseElements": {
+    "ConsoleLogin": "Success"
+  },
+  "requestID": "566A02B5E3890164A42CE4DE9E8E9F22",
+  "eventID": "0441553b84f4da4cd2734c8c23b8849d",
+  "readOnly": false,
+  "eventType": "AwsConsoleSignIn",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "additionalEventData": {
+    "MobileVersion": "No",
+    "MFAUsed": "Yes",
+    "LoginTo": "https://console.aws.amazon.com/console/home"
+  },
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "signin.eu-west-1.amazonaws.com"
+  }
+}

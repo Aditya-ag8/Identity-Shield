@@ -1,0 +1,54 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISLABROLE0001:collect-session",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-operator-role/collect-session",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISLABSESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISLABROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-operator-role",
+        "accountId": "123456789012",
+        "userName": "is-operator-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "false",
+        "creationDate": "2026-11-03T08:58:11Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T01:23:39Z",
+  "eventSource": "s3.amazonaws.com",
+  "eventName": "GetObject",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "81.2.69.142",
+  "userAgent": "aws-cli/2.15.30 Python/3.11.9 Windows/10 exe/AMD64 prompt/off command/s3.cp",
+  "requestParameters": {
+    "bucketName": "is-lab-crown-jewels",
+    "key": "hr/payroll-2026.xlsx",
+    "Host": "is-lab-crown-jewels.s3.eu-west-1.amazonaws.com"
+  },
+  "responseElements": null,
+  "requestID": "A76BF0844AF275229E48643F3AB61D77",
+  "eventID": "76747b33edb1cda1087f5fa9c40a0388",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": false,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Data",
+  "resources": [
+    {
+      "type": "AWS::S3::Object",
+      "ARN": "arn:aws:s3:::is-lab-crown-jewels/hr/payroll-2026.xlsx",
+      "accountId": "123456789012"
+    }
+  ],
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "s3.eu-west-1.amazonaws.com"
+  }
+}

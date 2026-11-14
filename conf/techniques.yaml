@@ -1,0 +1,165 @@
+# Module 3 technique catalogue.
+#
+# The eight techniques are fixed by the SDLC diagram. This file is the executable
+# definition: what we run, what CloudTrail should show, and how we prove the
+# attack actually worked.
+#
+# IMPORTANT: `executor_ref` values for Stratus must be verified against
+# `stratus list` on a machine with lab credentials before M5. Anything marked
+# `verify: true` in the notes has not been confirmed against the installed
+# version and is written from documentation.
+
+version: 1
+techniques:
+  - technique_id: T1087.004
+    name: Cloud Account Discovery
+    tactic: discovery
+    executor: boto3
+    executor_ref: identity_shield.runner.executors.iam_enumerate
+    event_names: [ListUsers, ListRoles, ListAccessKeys, GetAccountAuthorizationDetails]
+    requires_data_events: false
+    required_actions:
+      - iam:ListUsers
+      - iam:ListRoles
+      - iam:ListAccessKeys
+      - iam:GetAccountAuthorizationDetails
+    success_check:
+      type: api_result_non_empty
+      call: iam:ListUsers
+      field: Users
+    excluded_levels:
+      api_form: [batched]
+    notes: No Stratus equivalent; hand-written boto3 sweep.
+
+  - technique_id: T1526
+    name: Cloud Service Discovery
+    tactic: discovery
+    executor: boto3
+    executor_ref: identity_shield.runner.executors.service_sweep
+    event_names: [GetCallerIdentity, DescribeInstances, ListBuckets, DescribeDBInstances]
+    requires_data_events: false
+    required_actions:
+      - sts:GetCallerIdentity
+      - ec2:DescribeInstances
+      - s3:ListAllMyBuckets
+      - rds:DescribeDBInstances
+    success_check:
+      type: services_responding
+      minimum: 3
+    excluded_levels: {}
+    notes: Enumerates per-service Describe/List calls in the target region only.
+
+  - technique_id: T1580
+    name: Cloud Infrastructure Discovery
+    tactic: discovery
+    executor: stratus
+    executor_ref: aws.discovery.ec2-enumerate-from-instance
+    verify: true
+    event_names: [DescribeInstances, DescribeSecurityGroups, DescribeSubnets, ListBuckets]
+    requires_data_events: false
+    required_actions:
+      - ec2:DescribeInstances
+      - ec2:DescribeSecurityGroups
+      - ec2:DescribeSubnets
+      - s3:ListAllMyBuckets
+    success_check:
+      type: inventory_snapshot
+      minimum_services: 3
+    excluded_levels:
+      identity_context: [iam_user]
+    notes: Stratus covers the EC2 half; bucket enumeration is added via boto3.
+
+  - technique_id: T1078.004
+    name: Valid Accounts - Cloud Accounts
+    tactic: initial-access
+    executor: boto3
+    executor_ref: identity_shield.runner.executors.valid_account_use
+    event_names: [ConsoleLogin, GetCallerIdentity, AssumeRole]
+    requires_data_events: false
+    required_actions:
+      - sts:GetCallerIdentity
+      - iam:ListUsers
+    success_check:
+      type: session_established
+    excluded_levels:
+      client_tool: [terraform, non_sdk_http]
+    notes: >
+      Console variant (ConsoleLogin, carries additionalEventData.MFAUsed) is the
+      richest detection surface in the corpus; API-only variant is the control.
+
+  - technique_id: T1098.001
+    name: Additional Cloud Credentials
+    tactic: persistence
+    executor: stratus
+    executor_ref: aws.persistence.iam-create-access-key
+    verify: true
+    alternates:
+      - aws.persistence.iam-create-user-login-profile
+    event_names: [CreateAccessKey, CreateLoginProfile, UpdateLoginProfile, UpdateAssumeRolePolicy]
+    requires_data_events: false
+    required_actions:
+      - iam:CreateAccessKey
+      - iam:CreateLoginProfile
+      - iam:UpdateLoginProfile
+      - iam:UpdateAssumeRolePolicy
+    success_check:
+      type: new_credential_authenticates
+    excluded_levels: {}
+    notes: The new credential must actually authenticate, not merely be created.
+
+  - technique_id: T1098.003
+    name: Additional Cloud Roles
+    tactic: privilege-escalation
+    executor: stratus
+    executor_ref: aws.persistence.iam-backdoor-role
+    verify: true
+    event_names: [AttachRolePolicy, PutRolePolicy, UpdateAssumeRolePolicy, PassRole, AssumeRole]
+    requires_data_events: false
+    required_actions:
+      - iam:AttachRolePolicy
+      - iam:PutRolePolicy
+      - iam:UpdateAssumeRolePolicy
+      - iam:PassRole
+      - sts:AssumeRole
+    success_check:
+      type: escalated_action_succeeds
+      note: >
+        Target an action the executing principal was denied before the change.
+        This is what the permission boundary in §6.1 must not block.
+    excluded_levels: {}
+    notes: The most permission-sensitive technique in the set.
+
+  - technique_id: T1552.005
+    name: Cloud Instance Metadata API
+    tactic: credential-access
+    executor: stratus
+    executor_ref: aws.credential-access.ec2-steal-instance-credentials
+    verify: true
+    event_names: [GetCallerIdentity, DescribeInstances]
+    requires_data_events: false
+    required_actions:
+      - ec2:DescribeInstances
+    success_check:
+      type: stolen_credentials_authenticate
+    excluded_levels:
+      network_origin: [service_mediated, alternate_endpoint]
+    notes: >
+      AWS logs no IMDS event. Detection can only be behavioural, on the stolen
+      role's subsequent calls. Treat as a known detection gap by construction.
+
+  - technique_id: T1530
+    name: Data from Cloud Storage
+    tactic: collection
+    executor: boto3
+    executor_ref: identity_shield.runner.executors.s3_object_read
+    event_names: [ListBucket, GetObject]
+    requires_data_events: true
+    required_actions:
+      - s3:ListBucket
+      - s3:GetObject
+    success_check:
+      type: object_bytes_match
+    excluded_levels: {}
+    notes: >
+      Requires an S3 data-event selector scoped to the lab bucket. Management
+      events alone contain no evidence for this technique.

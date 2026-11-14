@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# local data
+data/*.db
+data/*.db-wal
+data/*.db-shm
+.env
+.streamlit/secrets.toml
+
+# vendored third-party corpora (pull with scripts/pull_sigma.ps1)
+vendor/
+
+# OS noise
+Thumbs.db
+.DS_Store

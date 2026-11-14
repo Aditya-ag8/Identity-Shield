@@ -1,0 +1,31 @@
+title: AWS Infrastructure Enumeration via Stratus
+id: 5f0b7a1e-1c2d-4a3b-9e8f-0a1b2c3d4e03
+status: test
+description: >
+  Detects network and subnet enumeration, but only when the client identifies
+  itself as Stratus Red Team. Round-1 rules are full of checks like this.
+references:
+  - https://attack.mitre.org/techniques/T1580/
+author: Identity Shield
+date: 2026/11/03
+tags:
+  - attack.discovery
+  - attack.t1580
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: ec2.amazonaws.com
+    eventName:
+      - DescribeSecurityGroups
+      - DescribeSubnets
+      - DescribeVpcs
+    userAgent|contains: stratus
+  condition: selection
+fields:
+  - eventName
+  - userAgent
+falsepositives:
+  - Lab tooling
+level: medium

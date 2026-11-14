@@ -1,0 +1,47 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISEC2ROLE0001:i-0abc123def456",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-ec2-role/i-0abc123def456",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISEC2SESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISEC2ROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-ec2-role",
+        "accountId": "123456789012",
+        "userName": "is-ec2-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "false",
+        "creationDate": "2026-11-03T09:02:44Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T11:12:26Z",
+  "eventSource": "sts.amazonaws.com",
+  "eventName": "GetCallerIdentity",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "52.94.13.7",
+  "userAgent": "aws-cli/2.15.30 Python/3.11.9 Windows/10 exe/AMD64 prompt/off command/sts.get-caller-identity",
+  "requestParameters": null,
+  "responseElements": {
+    "userId": "AROAISEC2ROLE0001:i-0abc123def456",
+    "account": "123456789012",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-ec2-role/i-0abc123def456"
+  },
+  "requestID": "DA3977CC0CE9388621D569BDA0C78F59",
+  "eventID": "74fb47851c16ff569de1ae70b8e25f14",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "sts.eu-west-1.amazonaws.com"
+  }
+}

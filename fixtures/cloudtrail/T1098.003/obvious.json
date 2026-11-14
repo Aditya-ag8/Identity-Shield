@@ -1,0 +1,47 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISLABROLE0001:backdoor-session",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-operator-role/backdoor-session",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISLABSESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISLABROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-operator-role",
+        "accountId": "123456789012",
+        "userName": "is-operator-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "false",
+        "creationDate": "2026-11-03T08:58:11Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T04:07:44Z",
+  "eventSource": "iam.amazonaws.com",
+  "eventName": "PutRolePolicy",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "81.2.69.142",
+  "userAgent": "APN/1.0 HashiCorp/1.0 Terraform/1.7.5 (+https://www.terraform.io) terraform-provider-aws/5.40.0",
+  "requestParameters": {
+    "roleName": "is-app-role",
+    "policyName": "is-backdoor",
+    "policyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+  },
+  "responseElements": null,
+  "requestID": "F38120848B23D2AC70B1057394F3810B",
+  "eventID": "bafe96a26920e5f365aff50ada14e38e",
+  "readOnly": false,
+  "eventType": "AwsApiCall",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "iam.eu-west-1.amazonaws.com"
+  }
+}

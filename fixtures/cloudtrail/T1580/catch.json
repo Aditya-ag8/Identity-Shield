@@ -1,0 +1,46 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISLABROLE0001:stratus-session",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-operator-role/stratus-session",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISLABSESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISLABROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-operator-role",
+        "accountId": "123456789012",
+        "userName": "is-operator-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "false",
+        "creationDate": "2026-11-03T08:58:11Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T10:11:09Z",
+  "eventSource": "ec2.amazonaws.com",
+  "eventName": "DescribeSecurityGroups",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "52.94.13.7",
+  "userAgent": "stratus-red-team/2.11.0",
+  "requestParameters": {
+    "securityGroupSet": {},
+    "filterSet": {}
+  },
+  "responseElements": null,
+  "requestID": "96F60F4D4823F1322787B663C5F8C53A",
+  "eventID": "ac8ffac6f175364548b0c9e59223b3f5",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "ec2.eu-west-1.amazonaws.com"
+  }
+}

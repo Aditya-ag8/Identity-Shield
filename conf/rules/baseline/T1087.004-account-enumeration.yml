@@ -1,0 +1,30 @@
+title: AWS IAM Account Enumeration
+id: 5f0b7a1e-1c2d-4a3b-9e8f-0a1b2c3d4e01
+status: test
+description: >
+  Detects enumeration of IAM users and roles. Round-1 rule: it covers two API
+  calls only, and assumes the caller reaches for them first.
+references:
+  - https://attack.mitre.org/techniques/T1087/004/
+author: Identity Shield
+date: 2026/11/03
+tags:
+  - attack.discovery
+  - attack.t1087.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection_users:
+    eventSource: iam.amazonaws.com
+    eventName: ListUsers
+  selection_roles:
+    eventSource: iam.amazonaws.com
+    eventName: ListRoles
+  condition: 1 of selection_*
+fields:
+  - eventName
+  - userIdentity.arn
+falsepositives:
+  - Authorised inventory tooling
+level: medium

@@ -1,0 +1,42 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "IAMUser",
+    "principalId": "AIDAISLABUSER0001",
+    "arn": "arn:aws:iam::123456789012:user/is-operator",
+    "accountId": "123456789012",
+    "accessKeyId": "AKIAISLABUSER0001",
+    "userName": "is-operator"
+  },
+  "eventTime": "2026-11-03T12:01:52Z",
+  "eventSource": "s3.amazonaws.com",
+  "eventName": "ListBucket",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "52.94.13.7",
+  "userAgent": "aws-cli/2.15.30 Python/3.11.9 Windows/10 exe/AMD64 prompt/off command/s3.ls",
+  "requestParameters": {
+    "bucketName": "is-lab-crown-jewels",
+    "prefix": "finance/",
+    "Host": "is-lab-crown-jewels.s3.eu-west-1.amazonaws.com"
+  },
+  "responseElements": null,
+  "requestID": "50A5D985232B06D3704DBF0D7BD5FB09",
+  "eventID": "64fe128cc34eb55e99e17b1f9678f709",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": false,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Data",
+  "resources": [
+    {
+      "type": "AWS::S3::Bucket",
+      "ARN": "arn:aws:s3:::is-lab-crown-jewels",
+      "accountId": "123456789012"
+    }
+  ],
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "s3.eu-west-1.amazonaws.com"
+  }
+}

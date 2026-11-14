@@ -1,0 +1,29 @@
+title: AWS IAM Access Key Created
+id: 5f0b7a1e-1c2d-4a3b-9e8f-0a1b2c3d4e05
+status: test
+description: >
+  Detects iam:CreateAccessKey. Round-1 rule: one API name, no notion of who the
+  key was created for or whether the caller created it for themselves.
+references:
+  - https://attack.mitre.org/techniques/T1098/001/
+author: Identity Shield
+date: 2026/11/03
+tags:
+  - attack.persistence
+  - attack.t1098.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: iam.amazonaws.com
+    eventName: CreateAccessKey
+  condition: selection and not filter_errors
+  filter_errors:
+    errorCode: AccessDenied
+fields:
+  - userIdentity.arn
+  - requestParameters.userName
+falsepositives:
+  - CI/CD key rotation
+level: high

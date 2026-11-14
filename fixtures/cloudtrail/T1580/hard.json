@@ -1,0 +1,43 @@
+{
+  "eventVersion": "1.09",
+  "userIdentity": {
+    "type": "AssumedRole",
+    "principalId": "AROAISLABROLE0001:stratus-session",
+    "arn": "arn:aws:sts::123456789012:assumed-role/is-operator-role/stratus-session",
+    "accountId": "123456789012",
+    "accessKeyId": "ASIAISLABSESSION01",
+    "sessionContext": {
+      "sessionIssuer": {
+        "type": "Role",
+        "principalId": "AROAISLABROLE0001",
+        "arn": "arn:aws:iam::123456789012:role/is-operator-role",
+        "accountId": "123456789012",
+        "userName": "is-operator-role"
+      },
+      "attributes": {
+        "mfaAuthenticated": "false",
+        "creationDate": "2026-11-03T08:58:11Z"
+      }
+    }
+  },
+  "eventTime": "2026-11-03T10:12:03Z",
+  "eventSource": "s3.amazonaws.com",
+  "eventName": "ListBuckets",
+  "awsRegion": "eu-west-1",
+  "sourceIPAddress": "52.94.13.7",
+  "userAgent": "stratus-red-team/2.11.0",
+  "requestParameters": null,
+  "responseElements": null,
+  "requestID": "C332C8CFDF37CDF24809EB8B8A656D28",
+  "eventID": "40ea4a5e70b4c0d1cc81c9fbc6e84573",
+  "readOnly": true,
+  "eventType": "AwsApiCall",
+  "managementEvent": true,
+  "recipientAccountId": "123456789012",
+  "eventCategory": "Management",
+  "tlsDetails": {
+    "tlsVersion": "TLSv1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "clientProvidedHostHeader": "s3.eu-west-1.amazonaws.com"
+  }
+}
