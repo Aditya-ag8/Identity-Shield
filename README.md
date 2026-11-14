@@ -39,6 +39,25 @@ streamlit run dashboard/app.py
 | `python -m identity_shield.detect.pysigma_backend --report` | Sigma conversion / compile-rate report |
 | `pytest` | test suite |
 
+## M0 status
+
+| Check | Result |
+|---|---|
+| Tests | 92 passing (`pytest -q`) |
+| Fixtures | 24 (8 techniques × catch / obvious / hard) |
+| Round-1 rules | 8 Sigma + 5 Python |
+| Fixture expectations | 24/24 met |
+| pySigma compile rate, our corpus | 8/8 (100%) |
+| pySigma compile rate, SigmaHQ AWS corpus | **56/58 (97%)** |
+
+The M0 gate was 60% on the community corpus. It came in at 97%, so the pySigma
+backend approach is viable and does not need a fallback strategy.
+
+The two rules that do not compile both use the `fieldref` modifier
+(`userIdentity.arn|fieldref`), which compares one field to another rather than
+to a literal. That is a deliberate gap and belongs in the report as a
+limitation, not a bug to chase.
+
 ## Design notes
 
 - **Rules compile to predicates, not SQL.** Catalogue volume is small (tens of
