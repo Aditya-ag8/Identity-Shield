@@ -8,6 +8,7 @@ which two commands to run first rather than rendering an empty page.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -62,9 +63,10 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data source")
-        db_path = Path(
-            st.text_input("Database", value=str(config.DEFAULT_DB), help="SQLite file")
-        )
+        # Read the environment at runtime so tests can point the app at a
+        # throwaway database without mutating the repository.
+        default_db = os.environ.get("IDENTITY_SHIELD_DB", str(config.DEFAULT_DB))
+        db_path = Path(st.text_input("Database", value=default_db, help="SQLite file"))
         ready, reason = database_ready(db_path)
         if not ready:
             st.error(reason)
