@@ -253,7 +253,7 @@ def _overview(db_path: str, ruleset: str, run_id: str | None) -> None:
             range_color=(0, 1),
         )
         figure.update_layout(height=max(280, 36 * len(table)), coloraxis_showscale=False)
-        st.plotly_chart(figure, use_container_width=True)
+        st.plotly_chart(figure, width='stretch')
     with right:
         st.subheader("Trial counts")
         st.dataframe(
@@ -261,7 +261,7 @@ def _overview(db_path: str, ruleset: str, run_id: str | None) -> None:
                 evasion=table["evasion"].map(_pct)
             ),
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
         )
 
     try:
@@ -346,7 +346,7 @@ def _variants(db_path: str, ruleset: str, run_id: str | None) -> None:
     display = subset[
         ["variant_id", "variant_set", *factor_columns, "outcome", "alerts", "error"]
     ].sort_values(["variant_set", "variant_id"])
-    st.dataframe(display, hide_index=True, use_container_width=True, height=460)
+    st.dataframe(display, hide_index=True, width='stretch', height=460)
     st.download_button(
         "Download this grid as CSV",
         display.to_csv(index=False).encode("utf-8"),
@@ -364,7 +364,7 @@ def _variants(db_path: str, ruleset: str, run_id: str | None) -> None:
                 ["variant_id", "variant_set", *factor_columns, "error"]
             ].sort_values("variant_id"),
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
         )
 
 
@@ -405,9 +405,9 @@ def _heatmap(db_path: str, ruleset: str, run_id: str | None) -> None:
         labels={"x": factor, "y": "technique", "color": "evasion"},
     )
     figure.update_layout(height=max(320, 42 * len(pivot)))
-    st.plotly_chart(figure, use_container_width=True)
+    st.plotly_chart(figure, width='stretch')
     st.caption("Red = the rule set missed that level more often. Cell counts:")
-    st.dataframe(counts.fillna(0).astype(int), use_container_width=True)
+    st.dataframe(counts.fillna(0).astype(int), width='stretch')
     st.write(
         "This is the attribution chart: a whole column that is red points at one "
         "factor, not at eight independent technique failures."
@@ -451,7 +451,7 @@ def _latency(db_path: str, ruleset: str, run_id: str | None) -> None:
             yaxis_title="fraction not yet alerted",
             height=360,
         )
-        st.plotly_chart(figure, use_container_width=True)
+        st.plotly_chart(figure, width='stretch')
         st.caption(
             f"Kaplan–Meier median {rule['km_median']} ms over {rule['n']} alerts. "
             "Every replay alert is treated as observed; misses are censored at the "
@@ -488,7 +488,7 @@ def _false_alarms(db_path: str, ruleset: str, run_id: str | None) -> None:
         st.dataframe(
             benign[["variant_id", "technique_id", "outcome", "alerts", "error"]],
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
         )
     st.write(
         "Broadening a rule set usually raises detection and false alarms together. "
@@ -515,7 +515,7 @@ def _rule_diff(db_path: str) -> None:
     ):
         st.markdown(f"**{title}**")
         if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
         else:
             st.caption("None.")
     st.caption(
@@ -552,7 +552,7 @@ def _lab(db_path: str, run_id: str | None) -> None:
     if runs.empty:
         st.caption("No runs recorded.")
     else:
-        st.dataframe(runs, hide_index=True, use_container_width=True)
+        st.dataframe(runs, hide_index=True, width='stretch')
         if run_id:
             st.caption(f"Filtered to `{run_id}` in the analysis tabs.")
         synthetic = int(runs["synthetic"].sum())
@@ -594,7 +594,7 @@ def _fixtures(db_path: str, ruleset: str) -> None:
             st.error(f"{len(mismatches)} fixture expectation(s) not met.")
         st.dataframe(
             summary[["fixture_key", "technique_id", "flavour", "expected", "got", "fired_rules"]],
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -605,7 +605,7 @@ def _fixtures(db_path: str, ruleset: str) -> None:
         "e.user_agent, e.user_identity_type, e.trial_id, e.fixture_key "
         "FROM event e ORDER BY e.event_time DESC LIMIT 500",
     )
-    st.dataframe(frame, hide_index=True, use_container_width=True)
+    st.dataframe(frame, hide_index=True, width='stretch')
     st.caption("Limited to the 500 most recent events; use SQLite for a full export.")
 
 
