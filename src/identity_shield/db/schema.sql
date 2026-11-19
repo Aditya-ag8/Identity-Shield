@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS lab_run (
   git_sha            TEXT,
   ruleset_version    TEXT NOT NULL,
   collector_lag_ms   INTEGER,
+  synthetic          INTEGER NOT NULL DEFAULT 0,  -- 1 = offline rehearsal, never a finding
   notes              TEXT
 );
 
@@ -169,3 +170,48 @@ SELECT f.fixture_key,
 FROM fixture f
 LEFT JOIN event e ON e.fixture_key = f.fixture_key
 GROUP BY f.fixture_key;
+
+-- ---------------------------------------------------------------------------
+-- Trial outcome view. Detection is intentionally not baked in here: alerts
+-- belong to a rule set, so analysis queries join the selected ruleset. The
+-- view surfaces the variant metadata once so the dashboard does not repeat
+-- the join in every panel.
+-- ---------------------------------------------------------------------------
+
+CREATE VIEW IF NOT EXISTS v_trial_outcome AS
+SELECT t.trial_id,
+       t.run_id,
+       t.variant_id,
+       t.repetition,
+       t.window_start,
+       t.window_end,
+       t.attack_succeeded,
+       t.attack_evidence,
+       t.variant_changed,
+       t.variant_diff,
+       t.error,
+       v.technique_id,
+       v.variant_set,
+       v.factor_levels,
+       v.spec_sha256,
+       te.tactic,
+       te.name AS technique_name,
+       lr.synthetic,
+       lr.ruleset_version AS primary_ruleset
+FROM trial t
+JOIN variant v ON v.variant_id = t.variant_id
+JOIN lab_run lr ON lr.run_id = t.run_id
+LEFT JOIN technique te ON te.technique_id = v.technique_id;
+
+-- ---------------------------------------------------------------------------
+-- Indexes used by replay, collection and every dashboard query.
+-- ---------------------------------------------------------------------------
+
+CREATE INDEX IF NOT EXISTS idx_event_trial_time ON event(trial_id, event_time);
+CREATE INDEX IF NOT EXISTS idx_event_name_time  ON event(event_source, event_name, event_time);
+CREATE INDEX IF NOT EXISTS idx_alert_trial      ON alert(trial_id);
+CREATE INDEX IF NOT EXISTS idx_alert_fixture    ON alert(fixture_key);
+CREATE INDEX IF NOT EXISTS idx_rule_ruleset     ON rule(ruleset_version);
+CREATE INDEX IF NOT EXISTS idx_trial_variant    ON trial(variant_id);
+CREATE INDEX IF NOT EXISTS idx_trial_run        ON trial(run_id);
+CREATE INDEX IF NOT EXISTS idx_variant_technique ON variant(technique_id, variant_set);

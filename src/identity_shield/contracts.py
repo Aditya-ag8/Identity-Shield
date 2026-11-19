@@ -37,6 +37,11 @@ SCHEMA_VERSION = 1
 
 VARIANT_SETS = ("baseline", "ofat", "pairwise", "holdout")
 
+#: Normal-activity variants live in their own file and are never part of the
+#: attack-space coverage claim. They exist to measure false alarms.
+BENIGN_SETS = ("benign",)
+ALL_VARIANT_SETS = VARIANT_SETS + BENIGN_SETS
+
 #: Sets that may be shown to analysis code before the holdout is unsealed.
 VISIBLE_SETS = ("baseline", "ofat", "pairwise")
 
@@ -97,8 +102,8 @@ class Variant:
             f"bad technique_id {self.technique_id!r} (expected T####[.###])",
         )
         _require(
-            self.variant_set in VARIANT_SETS,
-            f"bad variant_set {self.variant_set!r}; expected one of {VARIANT_SETS}",
+            self.variant_set in ALL_VARIANT_SETS,
+            f"bad variant_set {self.variant_set!r}; expected one of {ALL_VARIANT_SETS}",
         )
         _require(bool(self.factor_levels), "factor_levels must not be empty")
         for name, level in self.factor_levels.items():
@@ -336,6 +341,145 @@ class TeardownReport:
             notes=tuple(data.get("notes") or ()),
             schema_version=int(data.get("schema_version", 0)),
         )
+
+
+# ---------------------------------------------------------------------------
+# Miss findings (analysis -> report / dashboard)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One missed variant, with the evidence needed to review the miss.
+
+    A finding never claims *why* a rule missed beyond what the rule's own field
+    list and the variant's expected surface prove. Anything stronger would be
+    speculation and belongs in the rule-diff review, not the artefact.
+    """
+
+    finding_id: str
+    technique_id: str
+    variant_id: str
+    variant_set: str
+    factor_levels: Mapping[str, str]
+    expected_surface: tuple[str, ...]
+    fired_rules: tuple[str, ...]
+    rule_fields: tuple[str, ...]
+    rationale: str
+    created_at: str
+    synthetic: bool = False
+    schema_version: int = SCHEMA_VERSION
+
+    def validate(self) -> None:
+        _require(bool(self.finding_id), "finding_id must not be empty")
+        _require(
+            bool(_TECHNIQUE_RE.match(self.technique_id)),
+            f"bad technique_id {self.technique_id!r}",
+        )
+        _require(
+            self.variant_set in VISIBLE_SETS,
+            f"finding variant_set must be a visible set, got {self.variant_set!r}",
+        )
+        _require(isinstance(self.factor_levels, Mapping), "factor_levels must be an object")
+        _require(
+            self.schema_version == SCHEMA_VERSION,
+            f"unsupported schema_version {self.schema_version!r}",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "kind": "finding",
+            "finding_id": self.finding_id,
+            "technique_id": self.technique_id,
+            "variant_id": self.variant_id,
+            "variant_set": self.variant_set,
+            "factor_levels": dict(self.factor_levels),
+            "expected_surface": list(self.expected_surface),
+            "fired_rules": list(self.fired_rules),
+            "rule_fields": list(self.rule_fields),
+            "rationale": self.rationale,
+            "synthetic": self.synthetic,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Finding":
+        finding = cls(
+            finding_id=_as_str(data.get("finding_id"), "finding_id"),
+            technique_id=_as_str(data.get("technique_id"), "technique_id"),
+            variant_id=_as_str(data.get("variant_id"), "variant_id"),
+            variant_set=_as_str(data.get("variant_set"), "variant_set"),
+            factor_levels={
+                str(k): str(v)
+                for k, v in (data.get("factor_levels") or {}).items()
+            },
+            expected_surface=tuple(str(v) for v in data.get("expected_surface") or ()),
+            fired_rules=tuple(str(v) for v in data.get("fired_rules") or ()),
+            rule_fields=tuple(str(v) for v in data.get("rule_fields") or ()),
+            rationale=_as_str(data.get("rationale"), "rationale"),
+            created_at=_as_str(data.get("created_at"), "created_at"),
+            synthetic=bool(data.get("synthetic")),
+            schema_version=int(data.get("schema_version", 0)),
+        )
+        finding.validate()
+        return finding
+
+
+@dataclass(frozen=True)
+class FindingsArtifact:
+    generated_at: str
+    ruleset_version: str
+    findings: tuple[Finding, ...]
+    summary: Mapping[str, Any] = field(default_factory=dict)
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "kind": "findings",
+            "generated_at": self.generated_at,
+            "ruleset_version": self.ruleset_version,
+            "findings": [finding.to_dict() for finding in self.findings],
+            "summary": dict(self.summary),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "FindingsArtifact":
+        return cls(
+            generated_at=_as_str(data.get("generated_at"), "generated_at"),
+            ruleset_version=_as_str(data.get("ruleset_version"), "ruleset_version"),
+            findings=tuple(
+                Finding.from_dict(row) for row in data.get("findings") or []
+            ),
+            summary=dict(data.get("summary") or {}),
+            schema_version=int(data.get("schema_version", 0)),
+        )
+
+    def validate(self) -> None:
+        _require(
+            self.schema_version == SCHEMA_VERSION,
+            f"unsupported schema_version {self.schema_version!r}",
+        )
+        seen: set[str] = set()
+        for finding in self.findings:
+            finding.validate()
+            _require(
+                finding.finding_id not in seen,
+                f"duplicate finding {finding.finding_id!r}",
+            )
+            seen.add(finding.finding_id)
+
+
+def write_findings(path: str | Path, artifact: FindingsArtifact) -> Path:
+    artifact.validate()
+    return write_json(path, artifact.to_dict())
+
+
+def read_findings(path: str | Path) -> FindingsArtifact:
+    artifact = FindingsArtifact.from_dict(read_json(path))
+    artifact.validate()
+    return artifact
 
 
 # ---------------------------------------------------------------------------

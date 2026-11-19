@@ -1,0 +1,35 @@
+title: AWS Valid Account Use - console path
+id: 8a1c4e10-2d3f-4b5a-9c6d-1e2f3a4b5c06
+status: test
+description: >-
+  Round-2 rule. Motivation: the round-1 rule covered only successful console
+  logins without MFA. This rule keeps the explicit MFA field but keys on the
+  sign-in outcome instead of requiring the literal "No" value, so a session
+  where CloudTrail omits MFAUsed is still evaluated. The API-only variant
+  remains a documented gap: a single GetCallerIdentity event from a long-term
+  user is indistinguishable from routine automation without a correlation rule.
+references:
+  - https://attack.mitre.org/techniques/T1078/004/
+author: Identity Shield
+date: 2026/11/19
+tags:
+  - attack.initial-access
+  - attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: signin.amazonaws.com
+    eventName: ConsoleLogin
+    responseElements.ConsoleLogin: Success
+  filter_mfa:
+    additionalEventData.MFAUsed: 'Yes'
+  condition: selection and not filter_mfa
+fields:
+  - eventName
+  - userIdentity.arn
+  - additionalEventData.MFAUsed
+falsepositives:
+  - Legacy accounts that have not enrolled MFA
+level: high

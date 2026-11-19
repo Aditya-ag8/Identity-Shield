@@ -1,0 +1,35 @@
+title: AWS Cloud Storage Read - data-event generalisation
+id: 8a1c4e10-2d3f-4b5a-9c6d-1e2f3a4b5c08
+status: test
+description: >-
+  Round-2 rule. Motivation: the round-1 rule hardcoded one bucket name and
+  GetObject, so a ListBucket variant or another bucket vanished. This rule keys
+  on the S3 data-event field set. It is deliberately broad; the false-positive
+  rate is measured against the benign baseline rather than assumed.
+references:
+  - https://attack.mitre.org/techniques/T1530/
+author: Identity Shield
+date: 2026/11/19
+tags:
+  - attack.collection
+  - attack.t1530
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: s3.amazonaws.com
+    eventName:
+      - GetObject
+      - ListBucket
+      - GetObjectAcl
+      - SelectObjectContent
+  condition: selection
+fields:
+  - userIdentity.arn
+  - requestParameters.bucketName
+  - requestParameters.key
+  - sourceIPAddress
+falsepositives:
+  - The data platform's own service account
+level: high

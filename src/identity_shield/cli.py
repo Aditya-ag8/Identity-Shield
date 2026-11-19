@@ -39,20 +39,62 @@ def _compile(argv: list[str]) -> int:
 
 
 def _demo(argv: list[str]) -> int:
+    import time
+
     from identity_shield.db.init import main as db_main
     from identity_shield.detect.loader import main as loader_main
     from identity_shield.detect.replay import main as replay_main
 
+    full = "--full" in argv
     steps: list[tuple[str, Callable[[list[str]], int], list[str]]] = [
         ("init", db_main, ["--drop"]),
         ("load", loader_main, []),
         ("replay", replay_main, ["--ruleset", "baseline-v1"]),
     ]
+    if full:
+        from identity_shield.analysis.cli import main as analyse_main
+        from identity_shield.runner.cli import main as runner_main
+        from identity_shield.variants.cli import main as variants_main
+
+        steps += [
+            ("variants", variants_main, ["generate", "--db", "data/identity_shield.db"]),
+            ("benign", variants_main, ["benign", "--db", "data/identity_shield.db"]),
+            (
+                "rehearsal",
+                runner_main,
+                [
+                    "campaign",
+                    "--synthetic",
+                    "--yes",
+                    "--set",
+                    "all",
+                    "--set",
+                    "benign",
+                    "--db",
+                    "data/identity_shield.db",
+                ],
+            ),
+            (
+                "report",
+                analyse_main,
+                ["report", "--db", "data/identity_shield.db"],
+            ),
+        ]
+
+    started = time.perf_counter()
+    timings: list[tuple[str, float]] = []
     for name, function, arguments in steps:
         print(f"\n=== {name} ===")
+        step_started = time.perf_counter()
         code = function(arguments)
+        timings.append((name, time.perf_counter() - step_started))
         if code != 0:
             return code
+    elapsed = time.perf_counter() - started
+    print("\n=== timing ===")
+    for name, duration in timings:
+        print(f"  {name:<12} {duration:6.2f}s")
+    print(f"  {'total':<12} {elapsed:6.2f}s")
     return 0
 
 
@@ -68,6 +110,24 @@ def _lab(argv: list[str]) -> int:
     return main(argv)
 
 
+def _runner(argv: list[str]) -> int:
+    from identity_shield.runner.cli import main
+
+    return main(argv)
+
+
+def _analyse(argv: list[str]) -> int:
+    from identity_shield.analysis.cli import main
+
+    return main(argv)
+
+
+def _bench(argv: list[str]) -> int:
+    from identity_shield.bench import main
+
+    return main(argv)
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "init": _init,
     "load": _load,
@@ -76,6 +136,9 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "demo": _demo,
     "variants": _variants,
     "lab": _lab,
+    "runner": _runner,
+    "analyse": _analyse,
+    "bench": _bench,
 }
 
 

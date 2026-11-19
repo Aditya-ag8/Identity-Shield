@@ -1,0 +1,44 @@
+title: AWS Service Discovery Sweep - field-set generalisation
+id: 8a1c4e10-2d3f-4b5a-9c6d-1e2f3a4b5c02
+status: test
+description: >-
+  Round-2 rule. Motivation: the round-1 rule detected DescribeInstances only.
+  A sweep that touched S3 or RDS first produced no signal. This rule keys on
+  the service-discovery field set: an identity call followed by read-only
+  Describe/List calls across services.
+references:
+  - https://attack.mitre.org/techniques/T1526/
+author: Identity Shield
+date: 2026/11/19
+tags:
+  - attack.discovery
+  - attack.t1526
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource:
+      - ec2.amazonaws.com
+      - s3.amazonaws.com
+      - rds.amazonaws.com
+      - sts.amazonaws.com
+    eventName:
+      - DescribeInstances
+      - DescribeAvailabilityZones
+      - DescribeDBInstances
+      - ListBuckets
+      - GetCallerIdentity
+  condition: selection and not filter_errors
+  filter_errors:
+    errorCode:
+      - AccessDenied
+      - UnauthorizedOperation
+fields:
+  - eventName
+  - eventSource
+  - userIdentity.arn
+falsepositives:
+  - Terraform refresh
+  - Auto Scaling health checks
+level: low

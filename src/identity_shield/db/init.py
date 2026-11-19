@@ -28,6 +28,20 @@ def init_db(path: str | Path | None = None, drop: bool = False) -> Path:
 
     conn = connect(resolved)
     try:
+        # Additive migrations for databases created before the column existed.
+        # The schema file itself cannot do this because CREATE TABLE IF NOT
+        # EXISTS leaves an old table untouched, and the trial view references
+        # the column.
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "lab_run" in tables:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(lab_run)")}
+            if "synthetic" not in columns:
+                conn.execute(
+                    "ALTER TABLE lab_run ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0"
+                )
         conn.executescript(schema)
         conn.commit()
     finally:

@@ -1,0 +1,37 @@
+title: AWS Infrastructure Enumeration - field-set generalisation
+id: 8a1c4e10-2d3f-4b5a-9c6d-1e2f3a4b5c03
+status: test
+description: >-
+  Round-2 rule. Motivation: the round-1 rule required the user agent to contain
+  "stratus". Changing the client tool removed the alert even though the same
+  Describe* calls were made. This rule keys on the network-enumeration field
+  set, not the tool name.
+references:
+  - https://attack.mitre.org/techniques/T1580/
+author: Identity Shield
+date: 2026/11/19
+tags:
+  - attack.discovery
+  - attack.t1580
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: ec2.amazonaws.com
+    eventName:
+      - DescribeInstances
+      - DescribeSecurityGroups
+      - DescribeSubnets
+      - DescribeVpcs
+      - DescribeRouteTables
+      - DescribeNetworkInterfaces
+  condition: selection and not filter_errors
+  filter_errors:
+    errorCode: UnauthorizedOperation
+fields:
+  - eventName
+  - userIdentity.arn
+falsepositives:
+  - Network inventory tooling
+level: medium

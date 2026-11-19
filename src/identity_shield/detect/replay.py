@@ -198,6 +198,40 @@ def _alert_id(rule_id: str, event_id: str) -> str:
     return hashlib.sha256(f"{rule_id}|{event_id}".encode("utf-8")).hexdigest()[:32]
 
 
+def _event_names(node) -> set[str] | None:
+    """Literal eventName values a rule requires, or None if it cannot be indexed.
+
+    This is an evaluation optimisation only. A wrong answer here could suppress
+    an alert, so anything uncertain (OR with an unrelated branch, ``not``,
+    regex/contains/modifiers, wildcards) returns None and the rule is evaluated
+    for every event.
+    """
+    from identity_shield.detect.rules import BoolNode, FieldMatch
+
+    if isinstance(node, FieldMatch):
+        if node.path.casefold() != "eventname" or node.op != "eq":
+            return None
+        values = {value.casefold() for value in node.values}
+        if any("*" in value or "?" in value for value in values):
+            return None
+        return values
+    if isinstance(node, BoolNode):
+        if node.op not in {"and", "or"}:
+            return None
+        collected: set[str] = set()
+        for child in node.children:
+            names = _event_names(child)
+            if names is None:
+                if node.op == "or":
+                    # Another branch can fire on a different event name, so
+                    # indexing on this branch alone would suppress alerts.
+                    return None
+                continue
+            collected |= names
+        return collected or None
+    return None
+
+
 def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, int]:
     prefix = f"{loaded.version}:"
     if clear:
@@ -218,6 +252,20 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
     alerts = 0
     events = 0
 
+    # Index rules that constrain eventName. A rule that can only fire on
+    # ListUsers does not need to be evaluated for a GetObject event. At 50k
+    # events this is the difference between a scan and a coffee break.
+    indexed: dict[str, list[Rule]] = {}
+    generic: list[Rule] = []
+    for rule in loaded.rules:
+        names = _event_names(rule.node) if rule.node is not None else None
+        if names:
+            for name in names:
+                indexed.setdefault(name, []).append(rule)
+        else:
+            generic.append(rule)
+
+    pending: list[tuple[Any, ...]] = []
     cursor = conn.execute("SELECT event_id, fixture_key, trial_id, raw FROM event")
     for row in cursor:
         events += 1
@@ -225,7 +273,9 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
             event = json.loads(row["raw"])
         except json.JSONDecodeError:
             continue
-        for rule in loaded.rules:
+        name = str(event.get("eventName") or "").casefold()
+        candidates = generic + indexed.get(name, [])
+        for rule in candidates:
             rule_id = rule_ids.get(rule.native_id) or f"{prefix}{rule.native_id}"
             try:
                 fired = rule.matches(event)
@@ -233,13 +283,7 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
                 continue
             if not fired:
                 continue
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO alert (alert_id, rule_id, event_id, trial_id,
-                                             fixture_key, evaluated_at, latency_ms,
-                                             matched_fields)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            pending.append(
                 (
                     _alert_id(rule_id, row["event_id"]),
                     rule_id,
@@ -249,9 +293,31 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
                     now,
                     None,
                     json.dumps(list(rule.fields)) if rule.fields else None,
-                ),
+                )
             )
             alerts += 1
+        if len(pending) >= 5000:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO alert (alert_id, rule_id, event_id, trial_id,
+                                             fixture_key, evaluated_at, latency_ms,
+                                             matched_fields)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                pending,
+            )
+            pending.clear()
+
+    if pending:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO alert (alert_id, rule_id, event_id, trial_id,
+                                         fixture_key, evaluated_at, latency_ms,
+                                         matched_fields)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            pending,
+        )
 
     conn.commit()
     return {"events": events, "alerts": alerts, "rules": len(loaded.rules)}

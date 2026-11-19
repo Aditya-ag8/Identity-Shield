@@ -16,7 +16,7 @@ against the factor definitions at load time.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -66,6 +66,9 @@ class Technique:
     requires_data_events: bool
     excluded_levels: Mapping[str, tuple[str, ...]]
     baseline_levels: Mapping[str, str]
+    success_check: Mapping[str, Any] = field(default_factory=dict)
+    alternates: tuple[str, ...] = ()
+    verify: bool = False
     notes: str = ""
 
     def is_allowed(self, factor: str, level: str) -> bool:
@@ -202,6 +205,9 @@ def load_techniques(path: str | Path | None = None) -> tuple[Technique, ...]:
                 requires_data_events=bool(entry.get("requires_data_events")),
                 excluded_levels=excluded,
                 baseline_levels=baseline_levels,
+                success_check=dict(entry.get("success_check") or {}),
+                alternates=tuple(str(item) for item in entry.get("alternates") or ()),
+                verify=bool(entry.get("verify")),
                 notes=str(entry.get("notes") or "").strip(),
             )
         )

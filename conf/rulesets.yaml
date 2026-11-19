@@ -19,11 +19,13 @@ rulesets:
   improved-v1:
     description: >
       Round-2 rule set, authored after analysing misses on the training split.
-      Must generalise on field sets rather than specific values.
+      Must generalise on field sets rather than specific values. The naive
+      round-1 Python rules are deliberately excluded: keeping them would make
+      every improvement score a mixture of both rounds.
     sigma_dirs:
       - conf/rules/improved
-    include_python_rules: true
-    source: mixed
+    include_python_rules: false
+    source: sigma
     frozen_at: null
 
 # Optional: vendored community corpus, used only for the compile-rate report.

@@ -1,0 +1,98 @@
+# Benign activity catalogue.
+#
+# These are normal operations that share the same API surface as the attack
+# techniques. They exist to measure false alarms: a rule that fires on every
+# S3 data event is "good" at detection only if its benign cost is acceptable.
+#
+# Each activity is expanded into a small number of variant rows by
+# `identity_shield.variants.benign`; the factor levels are recorded so the same
+# attribution machinery used for attacks applies to false alarms.
+
+version: 1
+activities:
+  - activity_id: BENIGN-IAM-INVENTORY
+    technique_id: T1087.004
+    name: Weekly IAM inventory
+    expected_alerts: 0
+    events:
+      - eventSource: iam.amazonaws.com
+        eventName: ListUsers
+      - eventSource: iam.amazonaws.com
+        eventName: ListRoles
+
+  - activity_id: BENIGN-SERVICE-SWEEP
+    technique_id: T1526
+    name: Terraform refresh across services
+    expected_alerts: 0
+    events:
+      - eventSource: sts.amazonaws.com
+        eventName: GetCallerIdentity
+      - eventSource: ec2.amazonaws.com
+        eventName: DescribeInstances
+      - eventSource: s3.amazonaws.com
+        eventName: ListBuckets
+
+  - activity_id: BENIGN-NETWORK-INVENTORY
+    technique_id: T1580
+    name: Network inventory from the platform team
+    expected_alerts: 0
+    events:
+      - eventSource: ec2.amazonaws.com
+        eventName: DescribeSubnets
+      - eventSource: ec2.amazonaws.com
+        eventName: DescribeSecurityGroups
+
+  - activity_id: BENIGN-CONSOLE-LOGIN
+    technique_id: T1078.004
+    name: Console login with MFA
+    expected_alerts: 0
+    events:
+      - eventSource: signin.amazonaws.com
+        eventName: ConsoleLogin
+        mfa_used: 'Yes'
+
+  - activity_id: BENIGN-KEY-ROTATION
+    technique_id: T1098.001
+    name: Scheduled access-key rotation
+    expected_alerts: 1
+    events:
+      - eventSource: iam.amazonaws.com
+        eventName: CreateAccessKey
+        requestParameters:
+          userName: is-test-user
+
+  - activity_id: BENIGN-POLICY-DEPLOY
+    technique_id: T1098.003
+    name: Approved infrastructure-as-code policy attachment
+    expected_alerts: 1
+    events:
+      - eventSource: iam.amazonaws.com
+        eventName: AttachRolePolicy
+        requestParameters:
+          roleName: is-app-role
+          policyArn: arn:aws:iam::aws:policy/ReadOnlyAccess
+
+  - activity_id: BENIGN-INSTANCE-CALL
+    technique_id: T1552.005
+    name: Instance role calling STS normally
+    expected_alerts: 0
+    events:
+      - eventSource: sts.amazonaws.com
+        eventName: GetCallerIdentity
+        instance_context: true
+
+  - activity_id: BENIGN-DATA-READ
+    technique_id: T1530
+    name: Data platform reading its own bucket
+    expected_alerts: 1
+    events:
+      - eventSource: s3.amazonaws.com
+        eventName: GetObject
+        requestParameters:
+          bucketName: is-lab-crown-jewels
+          key: finance/approved.csv
+        source_ip: 10.20.0.15
+
+# `expected_alerts` is a human expectation used by the report, not a test
+# oracle. Improved rules that intentionally broaden a field set are expected to
+# raise false alarms on some of these activities; that trade-off is the point.

@@ -72,6 +72,53 @@ class GuardedClient:
         return f"GuardedClient({self._service})"
 
 
+class LabSession:
+    """Writable boto3 session for the runner.
+
+    Deliberately separate from :class:`GuardedSession`: the census must never
+    mutate the account, while an attack trial must be able to create and delete
+    its own resources. Keeping them as different types means a census function
+    cannot accidentally acquire a write-capable client.
+    """
+
+    def __init__(
+        self,
+        session: Any | None = None,
+        region_name: str | None = None,
+        profile_name: str | None = None,
+    ) -> None:
+        if session is None:
+            import boto3
+
+            session = boto3.Session(
+                profile_name=profile_name, region_name=region_name
+            )
+        self._session = session
+        self._region = region_name or getattr(session, "region_name", None)
+        self._account_id: str | None = None
+
+    @property
+    def region(self) -> str | None:
+        return self._region
+
+    def client(self, service: str, **kwargs: Any) -> Any:
+        if self._region and "region_name" not in kwargs:
+            kwargs["region_name"] = self._region
+        return self._session.client(service, **kwargs)
+
+    def has_credentials(self) -> bool:
+        try:
+            return self._session.get_credentials() is not None
+        except Exception:  # pragma: no cover - botocore edge cases
+            return False
+
+    def account_id(self) -> str:
+        if self._account_id is None:
+            identity = self.client("sts").get_caller_identity()
+            self._account_id = str(identity["Account"])
+        return self._account_id
+
+
 class GuardedSession:
     """Lazy boto3 session that hands out guarded clients."""
 

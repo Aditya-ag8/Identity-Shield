@@ -34,31 +34,33 @@ from identity_shield.variants.generator import GenerationOptions, generate, summ
 from identity_shield.variants.loader import CatalogueError, load_catalogue
 
 
-def persist(conn, variants: list[Variant], catalogue) -> int:
-    """Upsert variants into SQLite, removing stale rows for those techniques.
+def persist(conn, variants: list[Variant], catalogue, *, prune: bool = True) -> int:
+    """Upsert variants into SQLite.
 
-    The ``variant`` table is the contract Module 5 reads, so this must agree
-    exactly with the JSONL file. Rows are keyed by ``variant_id``; when a
-    regeneration shrinks a set, the surplus ids are deleted rather than left
-    behind. A trial that references one of those ids blocks the delete via the
-    foreign key, which is the correct outcome: you cannot rewrite history for a
-    variant that was already executed.
+    When ``prune`` is set, remove stale rows **for the sets being persisted
+    only**. The first version scoped deletion by technique, which meant writing
+    the benign file deleted every attack variant for the same eight techniques.
+    A trial that references a stale id still blocks the delete via the foreign
+    key, which is the correct outcome: history is not rewritten.
     """
     from identity_shield.detect.loader import load_techniques
 
     load_techniques(conn)
     technique_ids = {technique.technique_id for technique in catalogue.techniques}
     fresh = {variant.variant_id for variant in variants}
+    sets = {variant.variant_set for variant in variants}
 
+    placeholders = ",".join("?" for _ in technique_ids)
+    set_placeholders = ",".join("?" for _ in sets)
     existing = {
         row["variant_id"]
         for row in conn.execute(
-            "SELECT variant_id FROM variant WHERE technique_id IN (%s)"
-            % ",".join("?" for _ in technique_ids),
-            tuple(technique_ids),
+            f"SELECT variant_id FROM variant WHERE technique_id IN ({placeholders}) "
+            f"AND variant_set IN ({set_placeholders})",
+            tuple(technique_ids) + tuple(sets),
         )
-    }
-    stale = existing - fresh
+    } if sets else set()
+    stale = existing - fresh if prune else set()
     for variant_id in sorted(stale):
         conn.execute("DELETE FROM variant WHERE variant_id = ?", (variant_id,))
 
@@ -179,6 +181,39 @@ def _generate(args) -> int:
     return 0
 
 
+def _benign(args) -> int:
+    from identity_shield.variants.benign import generate_benign, load_benign
+
+    catalogue = _filtered_catalogue(load_catalogue(), args.technique)
+    activities = tuple(
+        activity
+        for activity in load_benign()
+        if activity.technique_id in {technique.technique_id for technique in catalogue.techniques}
+    )
+    variants = list(generate_benign(catalogue, activities=activities))
+    out = Path(args.out) if args.out else config.VARIANTS_DIR / "benign.jsonl"
+    write_variants(out, variants)
+
+    stale = 0
+    if args.db:
+        from identity_shield.db.connection import connect
+
+        conn = connect(args.db)
+        try:
+            stale = persist(conn, variants, catalogue)
+        finally:
+            conn.close()
+
+    if args.json:
+        print(json.dumps({"variants": len(variants), "out": str(out), "stale_rows_removed": stale}, indent=2))
+    else:
+        print(f"benign variants: {len(variants)}")
+        print(f"written:         {out}")
+        if stale:
+            print(f"stale DB rows removed: {stale}")
+    return 0
+
+
 def _coverage(args) -> int:
     catalogue = load_catalogue()
     path = Path(args.file) if args.file else config.VARIANTS_DIR / "variants.jsonl"
@@ -287,6 +322,15 @@ def _add_generate(commands) -> None:
     generate_parser.set_defaults(handler=_generate)
 
 
+def _add_benign(commands) -> None:
+    parser = commands.add_parser("benign", help="generate the normal-activity baseline")
+    parser.add_argument("--technique", action="append")
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--db", default=None)
+    parser.add_argument("--json", action="store_true")
+    parser.set_defaults(handler=_benign)
+
+
 def _add_coverage(commands) -> None:
     coverage_parser = commands.add_parser("coverage", help="recompute coverage from a variants file")
     coverage_parser.add_argument("--file", default=None)
@@ -304,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="identity-shield variants")
     commands = parser.add_subparsers(dest="command", required=True)
     _add_generate(commands)
+    _add_benign(commands)
     _add_coverage(commands)
     _add_validate(commands)
     args = parser.parse_args(argv)

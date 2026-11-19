@@ -1,0 +1,41 @@
+title: AWS Role Trust or Policy Change - field-set generalisation
+id: 8a1c4e10-2d3f-4b5a-9c6d-1e2f3a4b5c05
+status: test
+description: >-
+  Round-2 rule. Motivation: the round-1 rule missed trust-policy edits and
+  PassRole. This rule covers the role-modification field set, including the
+  inline, managed and trust-policy paths.
+references:
+  - https://attack.mitre.org/techniques/T1098/003/
+author: Identity Shield
+date: 2026/11/19
+tags:
+  - attack.privilege-escalation
+  - attack.persistence
+  - attack.t1098.003
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: iam.amazonaws.com
+    eventName:
+      - AttachRolePolicy
+      - DetachRolePolicy
+      - PutRolePolicy
+      - DeleteRolePolicy
+      - UpdateAssumeRolePolicy
+      - CreateRole
+      - AttachUserPolicy
+      - PutUserPolicy
+  condition: selection and not filter_errors
+  filter_errors:
+    errorCode: AccessDenied
+fields:
+  - eventName
+  - userIdentity.arn
+  - requestParameters.roleName
+  - requestParameters.policyArn
+falsepositives:
+  - Infrastructure as code applying a known policy set
+level: high

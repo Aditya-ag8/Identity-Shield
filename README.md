@@ -3,10 +3,10 @@
 Testing how well AWS CloudTrail detection rules hold up when the same attack is
 performed in different ways.
 
-Three parts are built: the offline detection core, the variant generator, and the
-Terraform lab (create + zero-residue destroy). The attack runner and log
-collector are not built, and no live AWS apply has been run yet. Details are in
-the status section below.
+The offline detection core, the variant generator, the attack runner, the
+CloudTrail collector, the detection-analysis pipeline, and the Terraform lab
+(create + zero-residue destroy) are built. Live AWS apply/destroy has still not
+been run in this environment. Details are in the status section below.
 
 See `docs/plan.md` for the full design. The short version:
 
@@ -26,10 +26,14 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 
-python -m identity_shield.db.init
+python -m identity_shield.db.init --drop
 python -m identity_shield.detect.loader
 identity-shield replay --ruleset baseline-v1
 identity-shield variants generate --db data/identity_shield.db
+identity-shield variants benign --db data/identity_shield.db
+identity-shield runner campaign --synthetic --yes --db data/identity_shield.db
+identity-shield analyse report --db data/identity_shield.db
+identity-shield bench
 pytest
 streamlit run dashboard/app.py
 ```
@@ -43,13 +47,24 @@ streamlit run dashboard/app.py
 | `identity-shield replay --ruleset baseline-v1` | evaluate all rules against all events |
 | `identity-shield compile` | Sigma conversion / compile-rate report |
 | `identity-shield variants generate` | write `data/variants/variants.jsonl` + coverage |
+| `identity-shield variants benign` | write `data/variants/benign.jsonl` (normal activity) |
 | `identity-shield variants validate` | check a variants file against the catalogue |
 | `identity-shield variants coverage` | recompute coverage from an existing file |
+| `identity-shield runner campaign --synthetic --yes` | offline end-to-end rehearsal |
+| `identity-shield runner campaign --yes` | live campaign against the lab account |
+| `identity-shield runner preflight --variant-id ...` | check one variant before running it |
+| `identity-shield runner collect ...` | consume CloudTrail objects from SQS |
+| `identity-shield runner sweep --run-id ...` | find tagged residue for a run |
+| `identity-shield analyse summary` | detection, evasion and paired rates |
+| `identity-shield analyse misses` | write `data/findings.json` |
+| `identity-shield analyse diff` | compare baseline and improved rule sets |
+| `identity-shield analyse report` | write `data/report.md` and `data/report.json` |
+| `identity-shield bench` | offline performance budget check |
 | `identity-shield lab doctor` | check Terraform, credentials and Organizations |
 | `identity-shield lab up --yes` | `terraform init` + `apply` |
 | `identity-shield lab down --yes` | `terraform destroy` + post-destroy census |
 | `identity-shield lab down --check-only` | census and residue report without destroying |
-| `identity-shield demo` | end-to-end offline demo |
+| `identity-shield demo` | short offline demo (`--full` runs the campaign too) |
 | `pytest` | test suite |
 
 `lab up` and `lab down` require `--yes`; `down` writes a teardown report to
@@ -59,15 +74,18 @@ streamlit run dashboard/app.py
 
 | Check | Result |
 |---|---|
-| Tests | 139 passing (`pytest -q`) |
+| Tests | 156 passing (`pytest -q`) |
 | Fixtures | 24 (8 techniques × catch / obvious / hard) |
 | Round-1 rules | 8 Sigma + 5 Python |
+| Round-2 rules | 8 Sigma (naive Python rules deliberately excluded) |
 | Fixture expectations | 24/24 met |
 | pySigma compile rate, our corpus | 8/8 (100%) |
 | pySigma compile rate, SigmaHQ AWS corpus | **56/58 (97%)** |
 | Variants | 332 total: 8 baseline, 119 OFAT, 173 pairwise, 32 sealed holdout |
-| Variant coverage | 159/159 levels, 80/80 factor pairs, 0 invalid variants |
+| Benign variants | 16 normal-activity rows for false-alarm measurement |
+| Variant coverage | 159/159 levels, 100% of required factor pairs, 0 invalid variants |
 | Terraform | `terraform validate` passes (AWS provider 5.100.0) |
+| Offline rehearsal | 316 synthetic trials, ~1.4s end to end |
 | Live AWS apply/destroy | **not run** — no lab credentials configured |
 | Lab census/teardown | tested against fake AWS clients, not a real account |
 
@@ -76,23 +94,20 @@ The two pySigma rules that do not compile both use the `fieldref` modifier
 to a literal. That is a deliberate gap and belongs in the report as a
 limitation, not a bug to chase.
 
-## What is not built
+## What is not built or not proven
 
-- **Attack runner / executors.** `conf/techniques.yaml` names the Stratus
-  techniques and boto3 entry points, but `src/identity_shield/runner/` does not
-  exist. Techniques cannot be executed yet.
-- **Log collector.** CloudTrail → S3 → SQS is provisioned, but nothing reads the
-  queue into SQLite yet.
+- **Live AWS execution.** The runner, executors, preflight, collector and
+  sweeper exist, but every live run requires lab credentials and a real
+  `terraform apply`; none has happened in this environment. The end-to-end path
+  has only been exercised as a synthetic rehearsal.
 - **NAT A / NAT B runner network.** The variant factor `network_origin` includes
   `nat_a` and `nat_b`, and the plan defines them as two NAT gateways with fixed
   EIPs. The current Terraform creates the attack target (bucket, roles,
   instance) but not those egress paths. Until that exists, those two levels are
-  generated but not executable.
+  generated but not executable against a live account.
 - **Service-mediated and federated paths.** `service_mediated` needs a
   Lambda/ECS/CloudFormation invoker; `federated_session` can currently be
   approximated with `sts:GetFederationToken` but has no SSO/OIDC provider.
-- **Preflight `SimulatePrincipalPolicy`.** The deny-list boundary is in place;
-  the check that proves it does not block a technique runs in the runner.
 - **Live verification.** Terraform is not on `PATH` in the dev environment, and
   no AWS credentials are configured. HCL syntax and provider schema are
   validated; apply/destroy behaviour is unverified.
