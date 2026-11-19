@@ -56,12 +56,26 @@ def _demo(argv: list[str]) -> int:
     return 0
 
 
+def _variants(argv: list[str]) -> int:
+    from identity_shield.variants.cli import main
+
+    return main(argv)
+
+
+def _lab(argv: list[str]) -> int:
+    from identity_shield.lab.cli import main
+
+    return main(argv)
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "init": _init,
     "load": _load,
     "replay": _replay,
     "compile": _compile,
     "demo": _demo,
+    "variants": _variants,
+    "lab": _lab,
 }
 
 

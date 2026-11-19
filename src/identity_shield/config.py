@@ -30,6 +30,16 @@ FIXTURES: Path = ROOT / "fixtures"
 DATA: Path = ROOT / "data"
 DOCS: Path = ROOT / "docs"
 VENDOR: Path = ROOT / "vendor"
+INFRA: Path = ROOT / "infra"
+
+#: Module 4 output: variants.jsonl + coverage.json live here.
+VARIANTS_DIR: Path = DATA / "variants"
+
+#: Lab module output: census snapshots and teardown reports.
+LAB_DIR: Path = DATA / "lab"
+
+#: Terraform root for the lab environment.
+TERRAFORM_LAB: Path = INFRA / "terraform" / "envs" / "lab"
 
 DEFAULT_DB: Path = Path(os.environ.get(_ENV_DB, DATA / "identity_shield.db"))
 

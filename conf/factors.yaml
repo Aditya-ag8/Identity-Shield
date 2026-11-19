@@ -7,9 +7,16 @@
 # actually key on. A level with no observable surface is not a valid variant,
 # which is what the validity gate in Module 5 enforces.
 
+# Each factor carries `baseline`: the reference level used by the canonical
+# trial and by one-factor-at-a-time variants. A technique may override a
+# factor's baseline in techniques.yaml under `baseline_levels` when the
+# technique cannot exist at the global default (e.g. T1552.005 requires an
+# instance profile).
+
 factors:
   identity_context:
     description: Which principal performs the action.
+    baseline: iam_user
     levels:
       iam_user:            "Long-term IAM user credentials."
       assumed_role:        "STS session from an in-account role."
@@ -23,6 +30,7 @@ factors:
 
   network_origin:
     description: Where the request enters AWS from.
+    baseline: nat_a
     levels:
       nat_a:               "Lab VPC NAT gateway A (elastic IP 1)."
       nat_b:               "Lab VPC NAT gateway B (elastic IP 2)."
@@ -35,6 +43,7 @@ factors:
 
   client_tool:
     description: Which client produced the request.
+    baseline: boto3_default
     levels:
       boto3_default:       "boto3 with the stock botocore user agent."
       aws_cli:             "AWS CLI v2 user agent."
@@ -45,6 +54,7 @@ factors:
 
   timing:
     description: When the action is performed relative to baseline activity.
+    baseline: business_hours
     levels:
       business_hours:      "Inside 09:00-17:00 in the account timezone."
       off_hours:           "Outside business hours."
@@ -55,6 +65,7 @@ factors:
 
   api_form:
     description: How the API call itself is shaped.
+    baseline: canonical
     levels:
       canonical:           "The technique's reference call, default parameters."
       alternative_api:     "A different API reaching the same objective."

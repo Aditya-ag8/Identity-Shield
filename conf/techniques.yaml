@@ -67,6 +67,8 @@ techniques:
       minimum_services: 3
     excluded_levels:
       identity_context: [iam_user]
+    baseline_levels:
+      identity_context: assumed_role
     notes: Stratus covers the EC2 half; bucket enumeration is added via boto3.
 
   - technique_id: T1078.004
@@ -143,6 +145,9 @@ techniques:
       type: stolen_credentials_authenticate
     excluded_levels:
       network_origin: [service_mediated, alternate_endpoint]
+      identity_context: [iam_user, assumed_role, federated_session]
+    baseline_levels:
+      identity_context: instance_profile
     notes: >
       AWS logs no IMDS event. Detection can only be behavioural, on the stolen
       role's subsequent calls. Treat as a known detection gap by construction.

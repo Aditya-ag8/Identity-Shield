@@ -14,6 +14,17 @@ data/*.db-shm
 .env
 .streamlit/secrets.toml
 
+# generated artefacts (regenerate with `identity-shield variants generate` / `lab census`)
+data/variants/
+data/lab/
+
+# terraform
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/terraform.tfvars
+infra/terraform/**/crash.log
+
 # vendored third-party corpora (pull with scripts/pull_sigma.ps1)
 vendor/
 
