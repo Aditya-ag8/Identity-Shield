@@ -24,11 +24,12 @@ data/variants/
 data/lab/
 
 # terraform
-infra/terraform/**/.terraform/
-infra/terraform/**/*.tfstate
-infra/terraform/**/*.tfstate.*
-infra/terraform/**/terraform.tfvars
-infra/terraform/**/crash.log
+**/.terraform/
+**/.terraform.lock.hcl
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfvars
+**/crash.log
 
 # vendored third-party corpora (pull with scripts/pull_sigma.ps1)
 vendor/
@@ -36,3 +37,7 @@ vendor/
 # OS noise
 Thumbs.db
 .DS_Store
+
+# Unrelated projects in workspace
+StockSniper/
+

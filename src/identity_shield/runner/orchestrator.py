@@ -381,6 +381,11 @@ def run_trial(
     evidence["collection"] = {"events": events, "error": collection_error}
     evidence["variant_diff"] = diff
 
+    from identity_shield.runner.provenance import record_factor_provenance
+
+    trial_events = _load_events(conn, trial_id) if not ctx.synthetic else result.events
+    evidence["factor_provenance"] = record_factor_provenance(ctx, result, trial_events)
+
     _record_trial(
         conn,
         trial_id=trial_id,

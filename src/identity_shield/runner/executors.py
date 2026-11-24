@@ -23,18 +23,33 @@ import time
 from typing import Any, Mapping, Protocol
 from urllib.parse import unquote
 
+try:
+    from botocore.config import Config
+except ImportError:
+    Config = None  # type: ignore[assignment,misc]
+
 from identity_shield.runner.models import ExecutionResult, TrialContext
-from identity_shield.runner.synthetic import synthetic_events
+from identity_shield.runner.synthetic import USER_AGENTS, synthetic_events
 
 
 class Executor(Protocol):
     def execute(self, ctx: TrialContext) -> ExecutionResult: ...
 
 
-def _client(ctx: TrialContext, service: str):
+def _client(ctx: TrialContext, service: str, **kwargs: Any):
     if ctx.session is None:
         raise RuntimeError("no AWS session supplied")
-    return ctx.session.client(service, region_name=ctx.region)
+    client_tool = ctx.variant.factor_levels.get("client_tool", "boto3_default")
+    user_agent = USER_AGENTS.get(client_tool)
+    if user_agent and Config is not None and "config" not in kwargs:
+        kwargs["config"] = Config(user_agent=user_agent)
+
+    region = ctx.region
+    network_origin = ctx.variant.factor_levels.get("network_origin", "nat_a")
+    if network_origin == "alternate_endpoint" and region == "eu-west-1":
+        region = "us-east-1"
+
+    return ctx.session.client(service, region_name=region, **kwargs)
 
 
 def _lab(ctx: TrialContext, key: str, default: str) -> str:
@@ -69,8 +84,13 @@ class Boto3Executor:
     def _iam_enumerate(self, ctx: TrialContext) -> ExecutionResult:
         iam = _client(ctx, "iam")
         evidence: dict[str, Any] = {}
-        evidence["users"] = len(iam.list_users().get("Users", []))
-        evidence["roles"] = len(iam.list_roles().get("Roles", []))
+        api_form = ctx.variant.factor_levels.get("api_form", "canonical")
+        kwargs: dict[str, Any] = {}
+        if api_form == "extra_parameters":
+            kwargs["MaxItems"] = 100
+
+        evidence["users"] = len(iam.list_users(**kwargs).get("Users", []))
+        evidence["roles"] = len(iam.list_roles(**kwargs).get("Roles", []))
         try:
             evidence["authorization_details"] = bool(
                 iam.get_account_authorization_details().get("UserDetailList")
@@ -254,7 +274,7 @@ class Boto3Executor:
 
     def _object_read(self, ctx: TrialContext) -> ExecutionResult:
         bucket = _lab(ctx, "data_bucket", "is-lab-crown-jewels")
-        key = _lab(ctx, "data_key", "finance/approved.csv")
+        key = _lab(ctx, "data_key", "finance/q4.csv")
         s3 = _client(ctx, "s3")
         api_form = ctx.variant.factor_levels.get("api_form", "canonical")
         evidence: dict[str, Any] = {"bucket": bucket, "key": key, "api_form": api_form}
@@ -264,7 +284,11 @@ class Boto3Executor:
             evidence["objects_listed"] = listing.get("KeyCount", 0)
             return ExecutionResult(ok=True, evidence=evidence)
 
-        response = s3.get_object(Bucket=bucket, Key=key)
+        kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if api_form == "extra_parameters":
+            kwargs["ResponseContentType"] = "text/csv"
+
+        response = s3.get_object(**kwargs)
         body = response["Body"].read()
         evidence["bytes"] = len(body)
         evidence["sha256"] = hashlib.sha256(body).hexdigest()

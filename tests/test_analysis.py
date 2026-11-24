@@ -207,3 +207,101 @@ def test_synthetic_preflight_never_claims_aws_readiness() -> None:
     result = run_preflight(ctx)
     assert result.ok
     assert [check.name for check in result.checks] == ["synthetic"]
+
+
+def test_holdout_evaluation_requires_frozen_ruleset(tmp_path) -> None:
+    conn, catalogue, variants, benign, campaign = _campaign_fixture(tmp_path)
+    try:
+        replay.load_ruleset(conn, "baseline-v1")
+        # Intentionally unfreeze ruleset
+        conn.execute("UPDATE ruleset SET frozen_at = NULL WHERE ruleset_version = 'baseline-v1'")
+        with pytest.raises(ValueError, match="is not frozen"):
+            outcomes.trial_rows(conn, "baseline-v1", include_holdout=True)
+
+        # Re-freeze ruleset but clear manifest_sha256
+        conn.execute("UPDATE ruleset SET frozen_at = '2026-11-19T00:00:00Z', manifest_sha256 = NULL WHERE ruleset_version = 'baseline-v1'")
+        with pytest.raises(ValueError, match="no cryptographic manifest hash"):
+            outcomes.trial_rows(conn, "baseline-v1", include_holdout=True)
+
+        # Set manifest_sha256 but clear git_sha
+        conn.execute("UPDATE ruleset SET manifest_sha256 = 'b20e7084fbf6ad51f691ef8beabdf29e1b31e3b51c0613659ce7f8932bc4e311', git_sha = NULL WHERE ruleset_version = 'baseline-v1'")
+        with pytest.raises(ValueError, match="no registered git_sha commit identifier"):
+            outcomes.trial_rows(conn, "baseline-v1", include_holdout=True)
+
+        # Restore valid manifest hash and git_sha, but tamper with a rule body
+        original_manifest = "b20e7084fbf6ad51f691ef8beabdf29e1b31e3b51c0613659ce7f8932bc4e311"
+        conn.execute(
+            "UPDATE ruleset SET manifest_sha256 = ?, git_sha = '9b103b1cd162cf031fdd3ca0abe7aa54ee828607' WHERE ruleset_version = 'baseline-v1'",
+            (original_manifest,),
+        )
+        conn.execute(
+            "UPDATE rule SET body = 'modified: rule' WHERE rowid = (SELECT rowid FROM rule WHERE ruleset_version = 'baseline-v1' LIMIT 1)"
+        )
+        with pytest.raises(ValueError, match="manifest integrity check failed"):
+            outcomes.trial_rows(conn, "baseline-v1", include_holdout=True)
+
+        # Reload cleanly and verify valid holdout evaluation succeeds
+        conn.execute("DELETE FROM rule WHERE ruleset_version = 'baseline-v1'")
+        conn.execute("DELETE FROM ruleset WHERE ruleset_version = 'baseline-v1'")
+        replay.load_ruleset(conn, "baseline-v1")
+        rows = outcomes.trial_rows(conn, "baseline-v1", include_holdout=True)
+        assert rows
+
+        # Verify holdout variants are completely excluded when include_holdout=False (sealed)
+        standard_rows = outcomes.trial_rows(conn, "baseline-v1", include_holdout=False)
+        assert all(r["variant_set"] != "holdout" for r in standard_rows)
+    finally:
+        conn.close()
+
+
+def test_frozen_ruleset_immutability_enforced(tmp_path) -> None:
+    path = tmp_path / "immutability.db"
+    init_db(path, drop=True)
+    conn = connect(path)
+    try:
+        loader.load_techniques(conn)
+        replay.load_ruleset(conn, "baseline-v1")
+        # Try to modify ruleset with an altered fake manifest in config
+        with pytest.raises(ValueError, match="Ruleset manifest mismatch"):
+            custom_config = tmp_path / "custom_rulesets.yaml"
+            custom_config.write_text(
+                "rulesets:\n"
+                "  baseline-v1:\n"
+                "    sigma_dirs: [conf/rules/baseline]\n"
+                "    include_python_rules: true\n"
+                "    frozen_at: '2026-11-19T00:00:00Z'\n"
+                "    manifest_sha256: 'tampered-hash-00000000000000000000000000000000000000000000'\n",
+                encoding="utf-8",
+            )
+            replay.load_ruleset(conn, "baseline-v1", rulesets_path=custom_config)
+    finally:
+        conn.close()
+
+
+def test_zero_event_trial_is_never_classified_as_evasion(tmp_path) -> None:
+    path = tmp_path / "zero_event.db"
+    init_db(path, drop=True)
+    conn = connect(path)
+    try:
+        loader.load_techniques(conn)
+        loader.load_fixtures(conn)
+        conn.execute(
+            "INSERT INTO lab_run (run_id, started_at, aws_account_id, region, ruleset_version, synthetic)"
+            " VALUES ('r0', '2026-11-19T09:00:00Z', '123456789012', 'eu-west-1', 'baseline-v1', 0)"
+        )
+        conn.execute(
+            "INSERT INTO variant (variant_id, technique_id, variant_set, factor_levels, seed, spec_sha256)"
+            " VALUES ('v0', 'T1530', 'baseline', '{}', 1, 'sha')"
+        )
+        # Succeeded attack, but ZERO events in event table
+        conn.execute(
+            "INSERT INTO trial (trial_id, run_id, variant_id, repetition, window_start, attack_succeeded, variant_changed)"
+            " VALUES ('t0', 'r0', 'v0', 1, '2026-11-19T09:00:00Z', 1, 0)"
+        )
+        summary = outcomes.summarise(conn, "baseline-v1", run_id="r0")
+        assert summary["overall"]["attempted"] == 1
+        assert summary["overall"]["valid"] == 0
+        assert summary["overall"]["evaded"] == 0
+        assert summary["overall"]["invalid_or_unverified"] == 1
+    finally:
+        conn.close()

@@ -12,17 +12,20 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 data "aws_vpc" "default" {
+  count   = var.enable_instance ? 1 : 0
   default = true
 }
 
 data "aws_subnets" "default" {
+  count = var.enable_instance ? 1 : 0
   filter {
     name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+    values = [data.aws_vpc.default[0].id]
   }
 }
 
 data "aws_ami" "al2023" {
+  count       = var.enable_instance ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
 
@@ -301,6 +304,7 @@ resource "aws_iam_role_policy_attachment" "admin" {
 
 # Instance role for T1552.005.
 resource "aws_iam_role" "ec2" {
+  count                = var.enable_instance ? 1 : 0
   name                 = "is-ec2-role"
   path                 = "/identity-shield/"
   assume_role_policy   = data.aws_iam_policy_document.assume_by_ec2.json
@@ -312,28 +316,32 @@ resource "aws_iam_role" "ec2" {
 }
 
 resource "aws_iam_role_policy_attachment" "ec2_readonly" {
-  role       = aws_iam_role.ec2.name
+  count      = var.enable_instance ? 1 : 0
+  role       = aws_iam_role.ec2[0].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEC2ReadOnlyAccess"
 }
 
 # The IMDS target must also be reachable over SSM, since it has no key pair and
 # no inbound rules. This is how Module 5 will run a command on the instance.
 resource "aws_iam_role_policy_attachment" "ec2_ssm" {
-  role       = aws_iam_role.ec2.name
+  count      = var.enable_instance ? 1 : 0
+  role       = aws_iam_role.ec2[0].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 # Same capability parity as the user and app role: an instance-profile session
 # must be able to attempt the IAM-writing techniques, not be denied by the lab.
 resource "aws_iam_role_policy_attachment" "ec2_techniques" {
-  role       = aws_iam_role.ec2.name
+  count      = var.enable_instance ? 1 : 0
+  role       = aws_iam_role.ec2[0].name
   policy_arn = aws_iam_policy.technique_permissions.arn
 }
 
 resource "aws_iam_instance_profile" "ec2" {
-  name = "is-ec2-profile"
-  path = "/identity-shield/"
-  role = aws_iam_role.ec2.name
+  count = var.enable_instance ? 1 : 0
+  name  = "is-ec2-profile"
+  path  = "/identity-shield/"
+  role  = aws_iam_role.ec2[0].name
 }
 
 # ---------------------------------------------------------------------------
@@ -341,9 +349,10 @@ resource "aws_iam_instance_profile" "ec2" {
 # ---------------------------------------------------------------------------
 
 resource "aws_security_group" "lab" {
+  count       = var.enable_instance ? 1 : 0
   name        = "${var.lab_name}-no-ingress"
   description = "Lab instance. No inbound rules by design; IMDS is reachable from the instance itself."
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_vpc.default[0].id
 
   tags = {
     Name = "${var.lab_name}-no-ingress"
@@ -351,11 +360,12 @@ resource "aws_security_group" "lab" {
 }
 
 resource "aws_instance" "lab" {
-  ami                    = data.aws_ami.al2023.id
+  count                  = var.enable_instance ? 1 : 0
+  ami                    = data.aws_ami.al2023[0].id
   instance_type          = var.instance_type
-  subnet_id              = sort(data.aws_subnets.default.ids)[0]
-  vpc_security_group_ids = [aws_security_group.lab.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+  subnet_id              = sort(data.aws_subnets.default[0].ids)[0]
+  vpc_security_group_ids = [aws_security_group.lab[0].id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2[0].name
 
   metadata_options {
     http_endpoint               = "enabled"

@@ -136,22 +136,26 @@ resource "aws_cloudtrail" "main" {
 
   # Data events are charged and only T1530 needs them, so the selector is scoped
   # to one bucket. Without this, GetObject produces no log line at all.
-  advanced_event_selector {
-    name = "s3-object-events-lab-data"
+  dynamic "advanced_event_selector" {
+    for_each = var.enable_data_events ? [1] : []
 
-    field_selector {
-      field  = "eventCategory"
-      equals = ["Data"]
-    }
+    content {
+      name = "s3-object-events-lab-data"
 
-    field_selector {
-      field  = "resources.type"
-      equals = ["AWS::S3::Object"]
-    }
+      field_selector {
+        field  = "eventCategory"
+        equals = ["Data"]
+      }
 
-    field_selector {
-      field  = "resources.ARN"
-      equals = ["${var.data_bucket_arn}/"]
+      field_selector {
+        field  = "resources.type"
+        equals = ["AWS::S3::Object"]
+      }
+
+      field_selector {
+        field  = "resources.ARN"
+        equals = ["${var.data_bucket_arn}/"]
+      }
     }
   }
 

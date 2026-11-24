@@ -55,6 +55,17 @@ def _bump(statuses: dict[str, int], status: str) -> None:
     statuses[status] = statuses.get(status, 0) + 1
 
 
+def compute_ruleset_manifest(rules: Iterable[Rule]) -> str:
+    """Compute a deterministic cryptographic SHA-256 manifest hash over canonical rule contents."""
+    hasher = hashlib.sha256()
+    for rule in sorted(rules, key=lambda r: (r.native_id or "", r.path or "")):
+        hasher.update((rule.native_id or "").encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update((rule.body or "").strip().encode("utf-8"))
+        hasher.update(b"\x00")
+    return hasher.hexdigest()
+
+
 def _persist_rule(conn, version: str, rule: Rule, seen: set[str]) -> str:
     base = rule.native_id or "unnamed"
     rule_id = f"{version}:{base}"
@@ -101,12 +112,34 @@ def load_ruleset(
     if version not in configs:
         raise KeyError(f"unknown ruleset {version!r}; known: {sorted(configs)}")
     entry = configs[version]
+    git_sha = entry.get("git_sha")
+    if not git_sha:
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                git_sha = out.stdout.strip()
+        except Exception:
+            git_sha = None
+
+    existing_row = conn.execute(
+        "SELECT frozen_at, manifest_sha256, git_sha FROM ruleset WHERE ruleset_version = ?",
+        (version,),
+    ).fetchone()
 
     conn.execute(
         """
-        INSERT INTO ruleset (ruleset_version, created_at, frozen_at, description, source)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(ruleset_version) DO UPDATE SET description=excluded.description
+        INSERT INTO ruleset (ruleset_version, created_at, frozen_at, description, source, git_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ruleset_version) DO UPDATE SET
+            description=excluded.description,
+            git_sha=COALESCE(ruleset.git_sha, excluded.git_sha)
         """,
         (
             version,
@@ -114,6 +147,7 @@ def load_ruleset(
             entry.get("frozen_at"),
             (entry.get("description") or "").strip(),
             entry.get("source"),
+            git_sha,
         ),
     )
 
@@ -189,6 +223,44 @@ def load_ruleset(
         for rule in python_rules.rules():
             _persist_rule(conn, version, rule, seen)
             result.rules.append(rule)
+
+    computed_manifest = compute_ruleset_manifest(result.rules)
+    expected_manifest = entry.get("manifest_sha256")
+    if expected_manifest and computed_manifest != expected_manifest:
+        raise ValueError(
+            f"Ruleset manifest mismatch for {version!r}: configuration registered {expected_manifest}, "
+            f"but computed hash from rule definitions is {computed_manifest}."
+        )
+
+    if existing_row and existing_row["frozen_at"]:
+        existing_manifest = existing_row["manifest_sha256"]
+        if existing_manifest and existing_manifest != computed_manifest:
+            raise ValueError(
+                f"Frozen ruleset immutability error: ruleset {version!r} was frozen with manifest "
+                f"{existing_manifest}, but modified rules produced {computed_manifest}. "
+                "Frozen rulesets cannot be modified without creating a new ruleset version."
+            )
+
+    conn.execute(
+        """
+        INSERT INTO ruleset (ruleset_version, created_at, frozen_at, description, source, manifest_sha256, git_sha)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ruleset_version) DO UPDATE SET
+            description=excluded.description,
+            manifest_sha256=excluded.manifest_sha256,
+            git_sha=COALESCE(ruleset.git_sha, excluded.git_sha),
+            frozen_at=COALESCE(ruleset.frozen_at, excluded.frozen_at)
+        """,
+        (
+            version,
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            entry.get("frozen_at"),
+            (entry.get("description") or "").strip(),
+            entry.get("source"),
+            computed_manifest,
+            git_sha,
+        ),
+    )
 
     conn.commit()
     return result

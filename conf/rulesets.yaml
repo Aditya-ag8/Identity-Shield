@@ -14,7 +14,9 @@ rulesets:
       - conf/rules/baseline
     include_python_rules: true
     source: mixed
-    frozen_at: null
+    frozen_at: "2026-11-19T00:00:00Z"
+    manifest_sha256: "b20e7084fbf6ad51f691ef8beabdf29e1b31e3b51c0613659ce7f8932bc4e311"
+    git_sha: "9b103b1cd162cf031fdd3ca0abe7aa54ee828607"
 
   improved-v1:
     description: >
@@ -26,7 +28,9 @@ rulesets:
       - conf/rules/improved
     include_python_rules: false
     source: sigma
-    frozen_at: null
+    frozen_at: "2026-11-20T00:00:00Z"
+    manifest_sha256: "fb6d78778541f4de7c59f9749617c1b0154d0f47e5cf367c2de18496625fa547"
+    git_sha: "9b103b1cd162cf031fdd3ca0abe7aa54ee828607"
 
 # Optional: vendored community corpus, used only for the compile-rate report.
 # Pull with scripts/pull_sigma.ps1. Not part of any rule set by default.

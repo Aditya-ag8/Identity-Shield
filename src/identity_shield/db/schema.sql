@@ -105,7 +105,9 @@ CREATE TABLE IF NOT EXISTS ruleset (
   created_at         TEXT NOT NULL,
   frozen_at          TEXT,
   description        TEXT,
-  source             TEXT                     -- sigmahq | authored | mixed
+  source             TEXT,                    -- sigmahq | authored | mixed
+  manifest_sha256    TEXT,                    -- SHA-256 cryptographic manifest hash
+  git_sha            TEXT                     -- Git commit SHA-1 at freeze time
 );
 
 CREATE TABLE IF NOT EXISTS rule (

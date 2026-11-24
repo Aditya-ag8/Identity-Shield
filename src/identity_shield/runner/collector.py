@@ -80,17 +80,29 @@ def insert_events(
     received_at: str | None = None,
     only_between: tuple[str, str] | None = None,
 ) -> int:
-    """Normalise and bulk-insert events. Returns the number inserted."""
+    """Normalise and bulk-insert events.
+
+    Events falling outside only_between are stored with trial_id=None so they
+    are never lost when an SQS notification is acknowledged, preserving them
+    for subsequent trials or retrospective attribution. Returns the number
+    attributed to trial_id.
+    """
     received = received_at or datetime.now(timezone.utc).strftime(ISO)
     rows: list[tuple[Any, ...]] = []
+    attributed = 0
     for event in events:
         row = normalize(event)
+        event_trial = trial_id
         if only_between and not (only_between[0] <= row.event_time <= only_between[1]):
-            continue
+            event_trial = None
+        if event_trial == trial_id and trial_id is not None:
+            attributed += 1
+        elif trial_id is None:
+            attributed += 1
         rows.append(
             (
                 row.event_id,
-                trial_id,
+                event_trial,
                 fixture_key,
                 row.event_time,
                 received,
@@ -121,7 +133,7 @@ def insert_events(
         rows,
     )
     conn.commit()
-    return len(rows)
+    return attributed
 
 
 class CloudTrailCollector:
@@ -155,6 +167,25 @@ class CloudTrailCollector:
         messages = 0
         deadline = time.monotonic() + timeout
 
+        # Claim any matching unassigned events already stored from earlier batches
+        conn.execute(
+            """
+            UPDATE event SET trial_id = ?
+            WHERE trial_id IS NULL AND event_time BETWEEN ? AND ?
+            """,
+            (trial_id, start, end),
+        )
+        conn.commit()
+        for r in conn.execute("SELECT event_name FROM event WHERE trial_id = ?", (trial_id,)):
+            name = str(r["event_name"] or "")
+            if name in expected:
+                seen.add(name)
+        existing_count = conn.execute("SELECT COUNT(*) FROM event WHERE trial_id = ?", (trial_id,)).fetchone()[0]
+        inserted += existing_count
+
+        if expected and not (set(expected) - seen):
+            return CollectionResult(inserted, tuple(sorted(seen)), (), False, 0)
+
         while True:
             try:
                 response = self.sqs.receive_message(
@@ -183,14 +214,25 @@ class CloudTrailCollector:
                             trial_id=trial_id,
                             only_between=(start, end),
                         )
-                finally:
-                    try:
-                        self.sqs.delete_message(
-                            QueueUrl=self.queue_url,
-                            ReceiptHandle=message["ReceiptHandle"],
-                        )
-                    except Exception:  # noqa: BLE001 - message becomes visible again, which is safe
-                        pass
+                except Exception as exc:
+                    # Do not acknowledge message on failure; leave on SQS for retry
+                    return CollectionResult(
+                        inserted,
+                        tuple(sorted(seen)),
+                        tuple(n for n in expected if n not in seen),
+                        True,
+                        messages,
+                        f"{type(exc).__name__}: {exc}",
+                    )
+
+                # Acknowledge only after durable database persistence has succeeded
+                try:
+                    self.sqs.delete_message(
+                        QueueUrl=self.queue_url,
+                        ReceiptHandle=message["ReceiptHandle"],
+                    )
+                except Exception:  # noqa: BLE001 - message becomes visible again, safe due to idempotency
+                    pass
 
             missing = tuple(name for name in expected if name not in seen)
             if expected and not missing:

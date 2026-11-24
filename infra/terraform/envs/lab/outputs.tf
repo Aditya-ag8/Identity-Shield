@@ -30,6 +30,11 @@ output "data_bucket" {
   value       = module.labdata.data_bucket_name
 }
 
+output "data_key" {
+  description = "Attack-target S3 object key for T1530."
+  value       = module.labdata.data_key
+}
+
 output "test_user_arn" {
   value = module.labdata.test_user_arn
 }

@@ -122,11 +122,11 @@ class LabSession:
 class GuardedSession:
     """Lazy boto3 session that hands out guarded clients."""
 
-    def __init__(self, session: Any | None = None, region_name: str | None = None) -> None:
+    def __init__(self, session: Any | None = None, region_name: str | None = None, profile_name: str | None = None) -> None:
         if session is None:
             import boto3
 
-            session = boto3.Session(region_name=region_name)
+            session = boto3.Session(profile_name=profile_name, region_name=region_name)
         self._session = session
         self._region = region_name or getattr(session, "region_name", None)
         self._account_id: str | None = None

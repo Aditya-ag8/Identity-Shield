@@ -90,7 +90,7 @@ activities:
         eventName: GetObject
         requestParameters:
           bucketName: is-lab-crown-jewels
-          key: finance/approved.csv
+          key: finance/q4.csv
         source_ip: 10.20.0.15
 
 # `expected_alerts` is a human expectation used by the report, not a test

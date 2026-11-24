@@ -646,7 +646,35 @@ can turn a lab exercise into an incident.
 
 ---
 
-## 13. Open questions
+## 14. Customer Integration & Commercial Deployment Architecture
+
+### 14.1 Deployment Modes & Identity Boundaries
+1. **Self-Hosted Local CLI**: An authorized operator uses their local AWS CLI profile. The runner assumes the customer's lab roles via `sts:AssumeRole`.
+2. **Customer-Hosted Tooling Role**: The runner executes on a customer-hosted EC2 instance or container using an attached instance profile (`arn:aws:iam::<tooling_account>:role/identity-shield-runner`).
+3. **Future Vendor SaaS**: Multi-tenant execution engine using STS AssumeRole with a mandatory customer `ExternalId`.
+4. **Permanent Secrets Prohibited**: Disclosing permanent AWS access keys is forbidden. Temporary credentials expire automatically within 1 hour.
+
+### 14.2 Two-Role Least-Privilege Model
+- **Telemetry Collection Role**: Read-only S3 log access, SQS message consumption (`ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `GetQueueUrl`), CloudTrail status, and read-only Organizations classification. Receives zero attack permissions.
+- **Lab Execution Role**: Strictly bounded by IAM resource ARNs to `is-test-user*`, `is-admin-role*`, tagged SSM EC2 instances, and the target data bucket. Has zero unrestricted production access.
+
+### 14.3 AWS Organizations Integration
+- Ordinary member accounts cannot call `organizations:ListAccounts` (restricted to management account or delegated administrator).
+- Identity Shield calls `organizations:DescribeOrganization` to verify organization membership and gracefully falls back to single-account evaluation when account listing is denied.
+- Service Control Policies (SCPs) are never provisioned or modified (`enable_scps=false`, `count=0`).
+
+### 14.4 Technique Deployment Gating
+- Capability checks verify whether each of the 8 ATT&CK techniques can execute live under the active lab configuration.
+- T1530 requires S3 data events (`enable_data_events=true`).
+- T1552.005 requires EC2 target and SSM Run Command (`enable_instance=true`).
+- When disabled under cost controls, techniques are marked as **unavailable** live, failing closed in preflight and excluded from evasion statistics.
+
+### 14.5 Live Factor Provenance
+- Every variant records: requested level, applied level, observed evidence, and classification (`genuine`, `partial`, `synthetic-only`).
+- User-Agent header mutation via boto3 Config is recorded as `partial`, not CLI binary execution.
+- Regional endpoint mutation is recorded as `partial`, not source IP / network origin change.
+- Synchronous live execution of timing variations is recorded as `synthetic-only`.
+
 
 1. **Baseline ruleset source** — the workflow says "our Python rules and Sigma rules". Do the Sigma
    rules start from SigmaHQ `rules/cloud/aws/` (more defensible: "community rules failed on X% of

@@ -19,9 +19,11 @@ module "labdata" {
   region           = var.region
   data_bucket_name = var.data_bucket_name
   instance_type    = var.instance_type
+  enable_instance  = var.enable_instance
 }
 
 resource "aws_budgets_budget" "lab" {
+  count    = var.enable_budget ? 1 : 0
   provider = aws.us_east_1
 
   name         = "${var.lab_name}-monthly"
@@ -51,6 +53,7 @@ module "trail" {
   region             = var.region
   data_bucket_arn    = module.labdata.data_bucket_arn
   log_retention_days = var.log_retention_days
+  enable_data_events = var.enable_data_events
 }
 
 module "guardrails" {

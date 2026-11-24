@@ -29,9 +29,14 @@ output "admin_role_arn" {
 }
 
 output "ec2_role_arn" {
-  value = aws_iam_role.ec2.arn
+  value = var.enable_instance ? aws_iam_role.ec2[0].arn : null
 }
 
 output "instance_id" {
-  value = aws_instance.lab.id
+  value = var.enable_instance ? aws_instance.lab[0].id : null
+}
+
+output "data_key" {
+  description = "Target object key for T1530 data collection."
+  value       = aws_s3_object.crown_jewels.key
 }

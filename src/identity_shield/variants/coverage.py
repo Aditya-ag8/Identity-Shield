@@ -142,11 +142,17 @@ def _all_levels(techniques: Mapping[str, Any]) -> dict[str, Any]:
 
 def _counts_by_set(variants: Sequence[Variant], technique_id: str | None) -> dict[str, int]:
     counts = {name: 0 for name in ("baseline", "ofat", "pairwise", "holdout")}
+    unknown: dict[str, int] = {}
     for variant in variants:
         if technique_id is not None and variant.technique_id != technique_id:
             continue
-        counts[variant.variant_set] += 1
+        if variant.variant_set in counts:
+            counts[variant.variant_set] += 1
+        else:
+            unknown[variant.variant_set] = unknown.get(variant.variant_set, 0) + 1
     counts["total"] = sum(counts.values())
+    if unknown:
+        counts["unknown"] = unknown
     return counts
 
 

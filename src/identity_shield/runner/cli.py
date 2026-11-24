@@ -161,9 +161,17 @@ def _campaign(args) -> int:
         if not args.synthetic:
             from identity_shield.lab.aws import LabSession
 
-            session = LabSession(
-                region_name=args.region, profile_name=args.profile or None
-            )
+            if getattr(args, "role_arn", None):
+                import boto3
+                from identity_shield.lab import integration
+
+                base = boto3.Session(region_name=args.region, profile_name=args.profile or None)
+                assumed = integration.assume_role(base, args.role_arn, getattr(args, "external_id", None))
+                session = LabSession(session=assumed, region_name=args.region)
+            else:
+                session = LabSession(
+                    region_name=args.region, profile_name=args.profile or None
+                )
             if not session.has_credentials():
                 print(
                     f"no AWS credentials found for profile {args.profile!r}",
@@ -349,7 +357,9 @@ def _add_campaign(commands) -> None:
     parser.add_argument("--queue-url", default=None)
     parser.add_argument("--trail-name", default="identity-shield-trail")
     parser.add_argument("--bucket", default="is-lab-crown-jewels")
-    parser.add_argument("--key", default="finance/approved.csv")
+    parser.add_argument("--key", default="finance/q4.csv")
+    parser.add_argument("--role-arn", default=None, help="Cross-account role ARN for STS AssumeRole")
+    parser.add_argument("--external-id", default=None, help="External ID for STS AssumeRole")
     parser.add_argument("--instance-id", default=None)
     parser.add_argument("--test-user", default="is-test-user")
     parser.add_argument("--admin-role", default="is-admin-role")

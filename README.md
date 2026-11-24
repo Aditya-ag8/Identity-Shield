@@ -74,7 +74,7 @@ streamlit run dashboard/app.py
 
 | Check | Result |
 |---|---|
-| Tests | 156 passing (`pytest -q`) |
+| Tests | **202 passing** (`pytest -q`) |
 | Fixtures | 24 (8 techniques × catch / obvious / hard) |
 | Round-1 rules | 8 Sigma + 5 Python |
 | Round-2 rules | 8 Sigma (naive Python rules deliberately excluded) |
@@ -84,9 +84,12 @@ streamlit run dashboard/app.py
 | Variants | 332 total: 8 baseline, 119 OFAT, 173 pairwise, 32 sealed holdout |
 | Benign variants | 16 normal-activity rows for false-alarm measurement |
 | Variant coverage | 159/159 levels, 100% of required factor pairs, 0 invalid variants |
-| Terraform | `terraform validate` passes (AWS provider 5.100.0) |
-| Offline rehearsal | 316 synthetic trials, ~1.4s end to end |
-| Live AWS apply/destroy | **not run** — no lab credentials configured |
+| Cryptographic preregistration | SHA-256 manifest + git commit traceability verified on frozen rulesets |
+| Technique capability gating | Active in preflight; disabled services marked unavailable live |
+| Factor provenance | Every trial records genuine, partial, or synthetic-only classification |
+| Terraform customer templates | `terraform fmt` and `terraform validate` pass (`single-account` + `organization`) |
+| Offline rehearsal | 300 synthetic trials, ~0.9s end to end (30s budget -> PASS) |
+| Live AWS apply/destroy | **not run** — offline validation mode |
 | Lab census/teardown | tested against fake AWS clients, not a real account |
 
 The two pySigma rules that do not compile both use the `fieldref` modifier

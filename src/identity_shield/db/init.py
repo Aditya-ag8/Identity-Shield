@@ -42,6 +42,16 @@ def init_db(path: str | Path | None = None, drop: bool = False) -> Path:
                 conn.execute(
                     "ALTER TABLE lab_run ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0"
                 )
+        if "ruleset" in tables:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(ruleset)")}
+            if "manifest_sha256" not in columns:
+                conn.execute(
+                    "ALTER TABLE ruleset ADD COLUMN manifest_sha256 TEXT"
+                )
+            if "git_sha" not in columns:
+                conn.execute(
+                    "ALTER TABLE ruleset ADD COLUMN git_sha TEXT"
+                )
         conn.executescript(schema)
         conn.commit()
     finally:

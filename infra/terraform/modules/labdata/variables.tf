@@ -15,3 +15,8 @@ variable "instance_type" {
   type    = string
   default = "t3.micro"
 }
+
+variable "enable_instance" {
+  type    = bool
+  default = false
+}

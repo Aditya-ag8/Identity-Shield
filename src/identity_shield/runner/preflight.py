@@ -159,6 +159,27 @@ def _check_permissions(ctx: TrialContext, clients: Mapping[str, Any] | None) -> 
     return PreflightCheck("permissions", "ok", f"{len(actions)} action(s) allowed")
 
 
+def _check_capability(ctx: TrialContext) -> PreflightCheck:
+    from identity_shield.runner.capabilities import check_technique_capability
+
+    cap = check_technique_capability(
+        ctx.technique.technique_id,
+        ctx.lab,
+        synthetic=ctx.synthetic,
+    )
+    if not cap.available:
+        return PreflightCheck(
+            "technique_capability",
+            "fail",
+            f"Technique {ctx.technique.technique_id} unavailable for live execution: {cap.reason}",
+        )
+    return PreflightCheck(
+        "technique_capability",
+        "ok",
+        f"Available: {cap.reason}",
+    )
+
+
 def run_preflight(
     ctx: TrialContext,
     *,
@@ -174,6 +195,7 @@ def run_preflight(
         _check_region(ctx),
         _check_trail(ctx, clients),
         _check_queue(ctx, clients),
+        _check_capability(ctx),
         _check_permissions(ctx, clients),
     ]
     if include_duplicate:

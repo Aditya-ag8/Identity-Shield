@@ -32,6 +32,52 @@ def _parse(value: str | None) -> datetime | None:
     return moment.astimezone(timezone.utc)
 
 
+def check_holdout_frozen(conn, ruleset: str) -> None:
+    """Pre-registration gate: holdout variants can only be evaluated on frozen rulesets with valid cryptographic manifests and git commit traceability."""
+    import hashlib
+
+    row = conn.execute(
+        "SELECT frozen_at, manifest_sha256, git_sha FROM ruleset WHERE ruleset_version = ?",
+        (ruleset,),
+    ).fetchone()
+    if not row or not row["frozen_at"]:
+        raise ValueError(
+            f"Holdout gate error: ruleset {ruleset!r} is not frozen (frozen_at is null or unregistered). "
+            "Pre-registration requires freezing the ruleset before evaluating sealed holdout variants."
+        )
+    if not row["manifest_sha256"]:
+        raise ValueError(
+            f"Holdout gate error: ruleset {ruleset!r} has no cryptographic manifest hash. "
+            "Frozen rulesets must have a verified manifest_sha256 before holdout evaluation."
+        )
+    if not row["git_sha"]:
+        raise ValueError(
+            f"Holdout gate error: ruleset {ruleset!r} has no registered git_sha commit identifier. "
+            "Pre-registration requires a traceable git commit."
+        )
+
+    rule_rows = conn.execute(
+        "SELECT native_id, path, body FROM rule WHERE ruleset_version = ? ORDER BY native_id, path",
+        (ruleset,),
+    ).fetchall()
+    if not rule_rows:
+        raise ValueError(f"Holdout gate error: no rules found for ruleset {ruleset!r}.")
+
+    hasher = hashlib.sha256()
+    for r in rule_rows:
+        hasher.update((r["native_id"] or "").encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update((r["body"] or "").strip().encode("utf-8"))
+        hasher.update(b"\x00")
+    current_hash = hasher.hexdigest()
+    if current_hash != row["manifest_sha256"]:
+        raise ValueError(
+            f"Holdout gate error: ruleset {ruleset!r} manifest integrity check failed! "
+            f"Expected {row['manifest_sha256']}, computed {current_hash} from database rules. "
+            "Rules have been tampered with after freezing."
+        )
+
+
 def trial_rows(
     conn,
     ruleset: str,
@@ -40,6 +86,8 @@ def trial_rows(
     include_holdout: bool = False,
     include_benign: bool = False,
 ) -> list[dict[str, Any]]:
+    if include_holdout:
+        check_holdout_frozen(conn, ruleset)
     clauses = ["1 = 1"]
     where: list[Any] = []
     if run_id:
@@ -63,7 +111,8 @@ def trial_rows(
                    WHERE a.trial_id = t.trial_id AND r.ruleset_version = ?
                ) THEN 1 ELSE 0 END AS detected,
                (SELECT COUNT(*) FROM alert a JOIN rule r ON r.rule_id = a.rule_id
-                 WHERE a.trial_id = t.trial_id AND r.ruleset_version = ?) AS alerts
+                 WHERE a.trial_id = t.trial_id AND r.ruleset_version = ?) AS alerts,
+               (SELECT COUNT(*) FROM event e WHERE e.trial_id = t.trial_id) AS event_count
         FROM trial t
         JOIN variant v ON v.variant_id = t.variant_id
         JOIN lab_run lr ON lr.run_id = t.run_id
@@ -80,9 +129,15 @@ def trial_rows(
             record["factor_levels"] = json.loads(record.get("factor_levels") or "{}")
         except json.JSONDecodeError:
             record["factor_levels"] = {}
+        events = int(record.get("event_count") or 0)
+        record["events"] = events
         record["valid"] = bool(
             record["attack_succeeded"] == 1
+            and events > 0
             and (record["variant_set"] == "baseline" or record["variant_changed"] == 1)
+        )
+        record["telemetry_pending"] = bool(
+            record["attack_succeeded"] == 1 and events == 0
         )
         rows.append(record)
     return rows

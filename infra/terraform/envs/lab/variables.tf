@@ -66,3 +66,21 @@ variable "instance_type" {
   type        = string
   default     = "t3.micro"
 }
+
+variable "enable_data_events" {
+  description = "Create the CloudTrail S3 data-event selector for the crown-jewels bucket (T1530). Usage-based; keep false for a free-tier-safe first run."
+  type        = bool
+  default     = false
+}
+
+variable "enable_instance" {
+  description = "Create the EC2/SSM IMDS target (T1552.005). Usage-based; keep false for a free-tier-safe first run."
+  type        = bool
+  default     = false
+}
+
+variable "enable_budget" {
+  description = "Create the monthly budget alarm. The first two budgets are free."
+  type        = bool
+  default     = true
+}

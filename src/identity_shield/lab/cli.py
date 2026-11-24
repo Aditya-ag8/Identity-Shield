@@ -29,8 +29,24 @@ from identity_shield.lab.aws import GuardedSession
 from identity_shield.lab.destroy import default_report_path, teardown
 
 
-def _session(region: str | None) -> GuardedSession:
-    return GuardedSession(region_name=region)
+def _session(region: str | None, profile: str | None = None) -> GuardedSession:
+    return GuardedSession(region_name=region, profile_name=profile)
+
+
+def _session_from_args(args) -> GuardedSession:
+    # Handle customer cross-account STS AssumeRole if provided
+    role_arn = getattr(args, "role_arn", None)
+    external_id = getattr(args, "external_id", None)
+    if role_arn:
+        import boto3
+        from identity_shield.lab import integration
+
+        base = boto3.Session(region_name=getattr(args, "region", None), profile_name=getattr(args, "profile", None))
+        assumed = integration.assume_role(base, role_arn, external_id)
+        return GuardedSession(session=assumed, region_name=getattr(args, "region", None))
+    # Keep the one-argument call compatible with existing integrations/tests;
+    # pass a profile only when the operator explicitly selected one.
+    return _session(args.region, args.profile) if getattr(args, "profile", None) else _session(args.region)
 
 
 def _require_credentials(session: GuardedSession) -> bool:
@@ -67,8 +83,37 @@ def _print_census(census, *, title: str) -> None:
             print(f"    {error['service']}.{error['operation']}: {error['code']}")
 
 
+def _classify(args) -> int:
+    session = _session_from_args(args)
+    if not _require_credentials(session):
+        return 2
+    from identity_shield.lab import integration
+
+    scope = integration.DeploymentScope(args.scope)
+    classification = integration.classify_account(session, scope=scope)
+    if args.json:
+        print(json.dumps(classification.to_dict(), indent=2))
+    else:
+        print("account classification")
+        print(f"  account:        {classification.account_id}")
+        print(f"  scope:          {classification.deployment_scope.value}")
+        print(f"  org status:     {classification.organization_status.value}")
+        if classification.organization_id:
+            print(f"  org id:         {classification.organization_id}")
+        if classification.management_account_id:
+            print(f"  management id:  {classification.management_account_id}")
+        print(f"  inspectable:    {'yes' if classification.inspectable else 'no'}")
+        if classification.detail:
+            print(f"  detail:         {classification.detail}")
+    return 0
+
+
 def _doctor(args) -> int:
-    report = doctor_module.run_doctor(directory=args.workdir, region=args.region)
+    report = doctor_module.run_doctor(
+        directory=args.workdir,
+        region=args.region,
+        session=_session_from_args(args),
+    )
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
@@ -79,7 +124,7 @@ def _doctor(args) -> int:
 
 
 def _census(args) -> int:
-    session = _session(args.region)
+    session = _session_from_args(args)
     if not _require_credentials(session):
         return 2
     snapshot = census_module.collect(
@@ -132,7 +177,7 @@ def _up(args) -> int:
         for key, value in outputs.items():
             print(f"  {key}: {value}")
 
-    session = _session(args.region)
+    session = _session_from_args(args)
     if session.has_credentials():
         snapshot = census_module.collect(session, region=args.region)
         if not args.json:
@@ -150,7 +195,7 @@ def _down(args) -> int:
         print("refusing to destroy without --yes (use --check-only to inspect)", file=sys.stderr)
         return 2
 
-    session = _session(args.region)
+    session = _session_from_args(args)
     if not _require_credentials(session):
         return 2
 
@@ -185,10 +230,22 @@ def _down(args) -> int:
     return 0 if report.passed else 1
 
 
+def _add_classify(commands) -> None:
+    classify_parser = commands.add_parser("classify", help="classify account deployment scope and Organizations status")
+    classify_parser.add_argument("--region", default=None)
+    classify_parser.add_argument("--profile", default=None)
+    classify_parser.add_argument("--role-arn", default=None, help="STS AssumeRole ARN")
+    classify_parser.add_argument("--external-id", default=None, help="STS AssumeRole External ID")
+    classify_parser.add_argument("--scope", default="single_account", choices=["single_account", "organization"])
+    classify_parser.add_argument("--json", action="store_true")
+    classify_parser.set_defaults(handler=_classify)
+
+
 def _add_doctor(commands) -> None:
     doctor_parser = commands.add_parser("doctor", help="check Terraform, credentials and organization")
     doctor_parser.add_argument("--workdir", default=None)
     doctor_parser.add_argument("--region", default=None)
+    doctor_parser.add_argument("--profile", default=None)
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.add_argument("--strict", action="store_true", help="exit non-zero if not ready")
     doctor_parser.set_defaults(handler=_doctor)
@@ -198,6 +255,7 @@ def _add_status(commands) -> None:
     status_parser = commands.add_parser("status", help="what exists in the lab right now")
     status_parser.add_argument("--region", default=None)
     status_parser.add_argument("--lab-name", default=None)
+    status_parser.add_argument("--profile", default=None)
     status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=_census, out=None)
 
@@ -206,6 +264,7 @@ def _add_census(commands) -> None:
     census_parser = commands.add_parser("census", help="write a census snapshot")
     census_parser.add_argument("--region", default=None)
     census_parser.add_argument("--lab-name", default=None)
+    census_parser.add_argument("--profile", default=None)
     census_parser.add_argument("--out", default=None)
     census_parser.add_argument("--json", action="store_true")
     census_parser.set_defaults(handler=_census)
@@ -215,6 +274,7 @@ def _add_up(commands) -> None:
     up_parser = commands.add_parser("up", help="terraform init + apply")
     up_parser.add_argument("--workdir", default=None)
     up_parser.add_argument("--region", default=None)
+    up_parser.add_argument("--profile", default=None)
     up_parser.add_argument("--var", action="append", help="terraform variable as key=value")
     up_parser.add_argument("--plan", action="store_true", help="plan only")
     up_parser.add_argument("--yes", action="store_true", help="confirm apply")
@@ -227,6 +287,7 @@ def _add_down(commands) -> None:
     down_parser = commands.add_parser("down", help="terraform destroy + residue check")
     down_parser.add_argument("--workdir", default=None)
     down_parser.add_argument("--region", default=None)
+    down_parser.add_argument("--profile", default=None)
     down_parser.add_argument("--lab-name", default=None)
     down_parser.add_argument("--report", default=None)
     down_parser.add_argument("--check-only", action="store_true", help="census only, no destroy")
@@ -240,6 +301,7 @@ def _add_down(commands) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="identity-shield lab")
     commands = parser.add_subparsers(dest="command", required=True)
+    _add_classify(commands)
     _add_doctor(commands)
     _add_status(commands)
     _add_census(commands)

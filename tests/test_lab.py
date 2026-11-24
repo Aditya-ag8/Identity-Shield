@@ -8,6 +8,7 @@ from identity_shield.contracts import Census, ResourceRef
 from identity_shield.lab import census as census_module
 from identity_shield.lab import destroy as destroy_module
 from identity_shield.lab import doctor as doctor_module
+from identity_shield.lab import integration
 from identity_shield.lab import cli as lab_cli
 from identity_shield.lab.aws import GuardedClient, GuardedSession, ReadOnlyViolation
 from identity_shield.lab.models import DoctorReport, TerraformRun
@@ -366,3 +367,64 @@ def test_lab_cli_down_reports_residue_and_exits_nonzero(monkeypatch):
     monkeypatch.setattr(lab_cli, "_session", lambda _region: _session())
 
     assert lab_cli.main(["down", "--check-only", "--json"]) == 1
+
+
+def test_account_classification_distinguishes_member_from_scope():
+    session = _session(
+        clients={
+            "sts": FakeClient({"get_caller_identity": {"Account": ACCOUNT}}),
+            "organizations": FakeClient(
+                {
+                    "describe_organization": {
+                        "Organization": {
+                            "Id": "o-example",
+                            "MasterAccountId": "999999999999",
+                            "FeatureSet": "ALL",
+                        }
+                    }
+                }
+            ),
+        }
+    )
+    result = integration.classify_account(
+        session, scope=integration.DeploymentScope.SINGLE_ACCOUNT
+    )
+    assert result.organization_status is integration.OrganizationStatus.MEMBER
+    assert result.deployment_scope is integration.DeploymentScope.SINGLE_ACCOUNT
+    assert result.inspectable is True
+
+
+def test_account_classification_does_not_turn_access_denied_into_standalone():
+    session = _session(
+        clients={
+            "sts": FakeClient({"get_caller_identity": {"Account": ACCOUNT}}),
+            "organizations": FakeClient(
+                {
+                    "describe_organization": lambda _kwargs: (_ for _ in ()).throw(
+                        _error("AccessDeniedException")
+                    )
+                }
+            ),
+        }
+    )
+    result = integration.classify_account(session)
+    assert result.organization_status is integration.OrganizationStatus.UNKNOWN
+    assert result.inspectable is False
+
+
+def test_account_classification_accepts_explicit_not_in_organization():
+    session = _session(
+        clients={
+            "sts": FakeClient({"get_caller_identity": {"Account": ACCOUNT}}),
+            "organizations": FakeClient(
+                {
+                    "describe_organization": lambda _kwargs: (_ for _ in ()).throw(
+                        _error("AWSOrganizationsNotInUseException")
+                    )
+                }
+            ),
+        }
+    )
+    result = integration.classify_account(session)
+    assert result.organization_status is integration.OrganizationStatus.STANDALONE
+    assert result.inspectable is True
