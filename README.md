@@ -152,5 +152,3 @@ drift out of sync.
   fails the report if anything the lab owns remains or if the census itself
   could not run.
 
-
-i m making the changes
