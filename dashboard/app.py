@@ -32,9 +32,28 @@ from identity_shield.contracts import VISIBLE_SETS
 
 st.set_page_config(
     page_title="Identity Shield — Cloud Control Plane",
-    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }
+        header[data-testid="stHeader"] {
+            height: 1.75rem !important;
+            background: transparent !important;
+        }
+        h1 {
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 FLAVOUR_ORDER = ["catch", "obvious", "hard", "benign"]
@@ -641,7 +660,7 @@ def _captured_events(db_path: str) -> None:
 
 
 def main() -> None:
-    st.title("🛡️ Identity Shield — Cloud Security Control Plane")
+    st.title("Identity Shield — Cloud Security Control Plane")
     st.caption(
         "Empirical AWS CloudTrail Detection Resilience & MITRE ATT&CK Evaluation Suite."
     )
@@ -656,7 +675,7 @@ def main() -> None:
 
     # 2. Sidebar Configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.header("Configuration")
         default_db = os.environ.get("IDENTITY_SHIELD_DB", str(config.DEFAULT_DB))
         db_path = Path(st.text_input("Database (SQLite)", value=default_db, help="Local SQLite file"))
 
@@ -698,11 +717,11 @@ def main() -> None:
         sc4.metric("Alerts", c_alerts)
 
         if c_events == 0:
-            st.success("🟢 Clean Database (Zero fake/dummy data)")
+            st.success("Clean Database (Zero fake/dummy data)")
         else:
             st.info(f"Telemetry active ({c_events} events)")
 
-        if st.button("🧹 Reset Database (Wipe)", help="Reset data/identity_shield.db to 0 rows"):
+        if st.button("Reset Database (Wipe)", help="Reset data/identity_shield.db to 0 rows"):
             from identity_shield.db.init import init_db
 
             init_db(db_path, drop=True)
@@ -751,18 +770,18 @@ def main() -> None:
         )
     else:
         st.warning(
-            "⚪ **AWS Cloud:** Disconnected. Connect in the **AWS Connect** tab for live lab testing, "
+            "**AWS Cloud:** Disconnected. Connect in the **AWS Connect** tab for live lab testing, "
             "or run offline **Synthetic Rehearsals** ($0 AWS cost)."
         )
 
     # 4. Primary Tabs Layout
     main_tabs = st.tabs(
         [
-            "🔌 AWS Connect",
-            "🏗️ Lab & Resources",
-            "⚔️ Simulate & Attack",
-            "📊 Detection Analytics",
-            "💻 Command Console",
+            "AWS Connect",
+            "Lab & Resources",
+            "Simulate & Attack",
+            "Detection Analytics",
+            "Command Console",
         ]
     )
 
@@ -820,17 +839,16 @@ def main() -> None:
             with col_sk:
                 secret_key = st.text_input("Secret Access Key", type="password")
             session_token = st.text_input("Session Token (Optional)", type="password")
-            st.caption("🔒 Credentials reside strictly in memory for this session and are never saved to disk or database.")
+            st.caption("Credentials reside strictly in memory for this session and are never saved to disk or database.")
 
         c_connect, c_disconnect = st.columns([1, 4])
         with c_connect:
-            if st.button("🚀 Test & Connect", type="primary"):
+            if st.button("Test & Connect", type="primary"):
                 try:
                     import boto3
                     from identity_shield.lab.aws import GuardedSession
                     from identity_shield.lab.integration import DeploymentScope, assume_role, classify_account
 
-                    # Build session
                     if auth_method == "AWS CLI Profile":
                         boto_session = boto3.Session(profile_name=profile_name or None, region_name=aws_region)
                     elif auth_method == "STS AssumeRole (Cross-Account)":
@@ -850,41 +868,32 @@ def main() -> None:
                         )
 
                     guarded = GuardedSession(boto_session, region_name=aws_region)
-                    scope_enum = DeploymentScope.ORGANIZATION if deployment_scope == "organization" else DeploymentScope.SINGLE_ACCOUNT
-                    classification = classify_account(guarded, scope=scope_enum)
-
-                    sts_identity = boto_session.client("sts", region_name=aws_region).get_caller_identity()
-                    caller_arn = sts_identity.get("Arn", "unknown")
-                    account_id = sts_identity.get("Account", "unknown")
-
+                    sts_client = guarded.client("sts")
+                    caller = sts_client.get_caller_identity()
+                    scope_enum = (
+                        DeploymentScope.ORGANIZATION
+                        if deployment_scope == "organization"
+                        else DeploymentScope.SINGLE_ACCOUNT
+                    )
+                    org_info = classify_account(boto_session, scope=scope_enum)
                     st.session_state["aws_connected"] = True
                     st.session_state["session_info"] = {
-                        "account_id": account_id,
-                        "caller_arn": caller_arn,
+                        "account_id": caller.get("Account"),
+                        "caller_arn": caller.get("Arn"),
                         "region": aws_region,
-                        "org_status": classification.organization_status.value,
-                        "effective_scope": classification.effective_scope.value,
-                        "detail": classification.detail,
-                        "can_list_accounts": classification.can_list_accounts,
-                        "accounts": list(classification.accounts),
+                        "org_status": getattr(org_info, "status", deployment_scope),
                     }
-                    st.success("Authentication & Account Classification Succeeded!")
+                    st.success("Connected to AWS environment.")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Connection Failed: {type(exc).__name__}: {exc}")
+                    st.session_state["aws_connected"] = False
+                    st.error(f"Connection failed: {exc}")
 
         with c_disconnect:
-            if st.session_state.get("aws_connected"):
-                if st.button("Disconnect Session"):
-                    st.session_state["aws_connected"] = False
-                    st.session_state["session_info"] = {}
-                    st.info("Disconnected.")
-                    st.rerun()
-
-        if st.session_state.get("aws_connected"):
-            info = st.session_state["session_info"]
-            st.markdown("### Account Classification Card")
-            st.json(info)
+            if st.button("Disconnect") and st.session_state.get("aws_connected"):
+                st.session_state["aws_connected"] = False
+                st.session_state["session_info"] = {}
+                st.rerun()
 
     # --------------------------------------------------------------------------
     # TAB 2: Lab Infrastructure & Live Resource Monitor
@@ -898,7 +907,7 @@ def main() -> None:
 
         col_doc, col_cen = st.columns(2)
         with col_doc:
-            if st.button("🩺 Run Environment Doctor", help="Verify Terraform, AWS credentials, and guardrails"):
+            if st.button("Run Environment Doctor", help="Verify Terraform, AWS credentials, and guardrails"):
                 try:
                     import boto3
                     from identity_shield.lab.aws import GuardedSession
@@ -918,7 +927,7 @@ def main() -> None:
                     st.error(f"Doctor failed: {exc}")
 
         with col_cen:
-            if st.button("🔍 Run Live Resource Census", help="Read-only enumeration of lab resources"):
+            if st.button("Run Live Resource Census", help="Read-only enumeration of lab resources"):
                 try:
                     import boto3
                     from identity_shield.lab.aws import GuardedSession
@@ -988,7 +997,7 @@ def main() -> None:
                     "Technique": tech_id,
                     "Name": name,
                     "Tactic": tactic,
-                    "Available": "🟢 YES" if cap.available else "🟡 GATED",
+                    "Available": "YES" if cap.available else "GATED",
                     "Reason": cap.reason,
                     "Dependencies": ", ".join(cap.required_services) if cap.required_services else "offline fixture",
                 }
@@ -1008,9 +1017,9 @@ def main() -> None:
             reps = st.slider("Repetitions", min_value=1, max_value=3, value=1)
 
         if not is_synthetic and not st.session_state.get("aws_connected"):
-            st.warning("⚠️ Live AWS Campaign requires an active connection in the 'AWS Connect' tab.")
+            st.warning("Live AWS Campaign requires an active connection in the 'AWS Connect' tab.")
 
-        if st.button("🚀 Launch Campaign", type="primary"):
+        if st.button("Launch Campaign", type="primary"):
             cmd = [sys.executable, "-m", "identity_shield.cli", "runner", "campaign", "--db", str(db_path), "--yes"]
             if is_synthetic:
                 cmd.append("--synthetic")
@@ -1025,7 +1034,6 @@ def main() -> None:
                 proc = subprocess.run(cmd, capture_output=True, text=True)
                 console_box.code(proc.stdout + ("\n" + proc.stderr if proc.stderr else ""), language="bash")
 
-            # Replay rulesets to update alerts
             with st.spinner("Replaying rulesets against newly captured telemetry..."):
                 subprocess.run([sys.executable, "-m", "identity_shield.cli", "replay", "--ruleset", "baseline-v1", "--db", str(db_path)], capture_output=True)
                 subprocess.run([sys.executable, "-m", "identity_shield.cli", "replay", "--ruleset", "improved-v1", "--db", str(db_path)], capture_output=True)
@@ -1041,11 +1049,11 @@ def main() -> None:
         st.header("Detection Analytics & Rule Evaluation")
         if c_runs == 0:
             st.info(
-                "✨ **No Campaign Runs Recorded Yet**\n\n"
+                "No Campaign Runs Recorded Yet\n\n"
                 "The database is clean and free of pre-feeded fake data. "
                 "Go to **Simulate & Attack** to run a simulation or launch a quick rehearsal below."
             )
-            if st.button("⚡ Run Quick Synthetic Rehearsal (T1530 S3 Exfiltration)"):
+            if st.button("Run Quick Synthetic Rehearsal (T1530 S3 Exfiltration)"):
                 with st.spinner("Running quick synthetic rehearsal..."):
                     cmd = [
                         sys.executable,
@@ -1111,15 +1119,15 @@ def main() -> None:
         st.subheader("Quick Actions")
         qa1, qa2, qa3, qa4, qa5 = st.columns(5)
         run_cmd_text = None
-        if qa1.button("🩺 Lab Doctor"):
+        if qa1.button("Lab Doctor"):
             run_cmd_text = "lab doctor"
-        if qa2.button("🔍 Lab Census"):
+        if qa2.button("Lab Census"):
             run_cmd_text = "lab census"
-        if qa3.button("🛡️ Replay Rules"):
+        if qa3.button("Replay Rules"):
             run_cmd_text = f"replay --ruleset {ruleset} --db {db_path}"
-        if qa4.button("⚡ Preflight T1530"):
+        if qa4.button("Preflight T1530"):
             run_cmd_text = "runner preflight --variant-id T1530-ofat-000 --synthetic"
-        if qa5.button("📊 Generate Report"):
+        if qa5.button("Generate Report"):
             run_cmd_text = f"analyse report --db {db_path}"
 
         custom_cmd = st.text_input(
@@ -1128,9 +1136,8 @@ def main() -> None:
             placeholder="e.g. runner campaign --synthetic --yes --technique T1530",
         )
 
-        if st.button("▶ Run Command", type="primary") and custom_cmd:
+        if st.button("Run Command", type="primary") and custom_cmd:
             parsed = shlex.split(custom_cmd)
-            # Strip leading 'identity-shield' if typed
             if parsed and parsed[0] == "identity-shield":
                 parsed = parsed[1:]
             full_cmd = [sys.executable, "-m", "identity_shield.cli", *parsed]
