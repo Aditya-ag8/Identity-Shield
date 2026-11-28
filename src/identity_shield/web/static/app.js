@@ -4067,6 +4067,7 @@ function bindNavigationClicks(container) {
   container.querySelectorAll("[data-goto]").forEach((el) => {
     el.onclick = (e) => {
       e.preventDefault();
+      if (el.dataset.connCloud) STATE.connCloud = el.dataset.connCloud;
       navigate(el.dataset.goto);
     };
   });
@@ -4089,7 +4090,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     btn.onclick = () => navigate(btn.dataset.view);
   });
   document.querySelectorAll(".topbar [data-goto]").forEach((btn) => {
-    btn.onclick = () => navigate(btn.dataset.goto);
+    btn.onclick = () => {
+      if (btn.dataset.connCloud) STATE.connCloud = btn.dataset.connCloud;
+      navigate(btn.dataset.goto);
+    };
   });
   document.getElementById("drawer-close").onclick = closeDrawer;
   document.getElementById("drawer-backdrop").onclick = closeDrawer;

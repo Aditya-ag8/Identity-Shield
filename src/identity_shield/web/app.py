@@ -118,7 +118,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
             "frame-ancestors 'none'; base-uri 'self'"
         )
-        if path.startswith("/api/"):
+        if path.startswith("/api/") or path == "/" or path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 

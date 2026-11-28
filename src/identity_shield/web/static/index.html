@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Identity Shield</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261128c" />
 </head>
 <body>
   <div class="app-shell">
@@ -85,15 +85,15 @@
       <header class="topbar">
         <div class="topbar-left">
           <h1 class="view-title" id="topbar-title">Overview</h1>
-          <button type="button" class="status-chip" id="pill-aws" data-goto="connections" title="Manage AWS Connection">
+          <button type="button" class="status-chip" id="pill-aws" data-goto="connections" data-conn-cloud="aws" title="Manage AWS Connection">
             <span class="dot muted"></span>
             <span>AWS: Disconnected</span>
           </button>
-          <button type="button" class="status-chip" id="pill-gcp" data-goto="connections" title="Manage GCP Connection">
+          <button type="button" class="status-chip" id="pill-gcp" data-goto="connections" data-conn-cloud="gcp" title="Manage GCP Connection">
             <span class="dot muted"></span>
             <span>GCP: Offline</span>
           </button>
-          <button type="button" class="status-chip" id="pill-azure" data-goto="connections" title="Manage Azure Connection">
+          <button type="button" class="status-chip" id="pill-azure" data-goto="connections" data-conn-cloud="azure" title="Manage Azure Connection">
             <span class="dot muted"></span>
             <span>Azure: Offline</span>
           </button>
@@ -128,6 +128,6 @@
   <!-- Toast Stack -->
   <div class="toast-stack" id="toast-stack"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261128c"></script>
 </body>
 </html>
