@@ -42,9 +42,20 @@ TECHNIQUE_COLUMNS = (
 
 
 def load_techniques(conn, path: Path | None = None) -> int:
-    path = path or config.TECHNIQUES_YAML
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    entries = document.get("techniques") or []
+    source_path = path or config.TECHNIQUES_YAML
+    document = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
+    entries = list(document.get("techniques") or [])
+
+    if path is None:
+        from identity_shield import settings
+
+        overrides = settings.load_attack_overrides()
+        by_id = {str(item["technique_id"]): item for item in entries}
+        for custom_entry in overrides.get("custom_techniques") or []:
+            tid = str(custom_entry.get("technique_id") or "")
+            if tid:
+                by_id[tid] = dict(custom_entry)
+        entries = list(by_id.values())
 
     placeholders = ", ".join("?" for _ in TECHNIQUE_COLUMNS)
     updates = ", ".join(f"{column}=excluded.{column}" for column in TECHNIQUE_COLUMNS[1:])
@@ -66,9 +77,85 @@ def load_techniques(conn, path: Path | None = None) -> int:
             json.dumps(entry.get("required_actions") or []),
         )
         conn.execute(sql, values)
+        # Map technique to its supported cloud provider(s) cleanly without restricting techniques to 1 cloud
+        tid = str(entry["technique_id"])
+        cloud = str(entry.get("cloud_provider") or "aws").lower()
+        svc = str(entry.get("service") or "").lower()
+        conn.execute(
+            """
+            INSERT INTO technique_cloud_map (technique_id, cloud_provider, service, operations_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(technique_id, cloud_provider) DO UPDATE SET
+                service=excluded.service,
+                operations_json=excluded.operations_json
+            """,
+            (tid, cloud, svc, json.dumps(entry.get("event_names") or [])),
+        )
 
     conn.commit()
     return len(entries)
+
+
+def ingest_audit_payload(
+    conn,
+    payload: Any,
+    *,
+    cloud_provider: str = "auto",
+) -> dict[str, Any]:
+    """Ingest and normalize AWS CloudTrail, GCP Cloud Audit, or Azure Activity/Entra payloads."""
+    from datetime import datetime, timezone
+
+    from identity_shield.clouds.registry import detect_and_normalize_audit_payload
+    from identity_shield.db.init import ensure_tables
+
+    ensure_tables(conn)
+    canonical_events = detect_and_normalize_audit_payload(
+        payload,
+        cloud_provider=None if cloud_provider in {"", "auto"} else cloud_provider,
+    )
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    inserted = 0
+    counts: dict[str, int] = {}
+    for cev in canonical_events:
+        sigma_doc = cev.to_sigma_event()
+        raw_json = json.dumps(sigma_doc, ensure_ascii=False, sort_keys=True)
+        conn.execute(
+            """
+            INSERT INTO event (
+                event_id, event_time, received_at, cloud_provider, account_scope,
+                source_type, schema_version, event_source, event_name, aws_region,
+                source_ip, user_agent, user_identity_type, user_identity_arn, error_code, raw
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                cloud_provider=excluded.cloud_provider,
+                account_scope=excluded.account_scope,
+                source_type=excluded.source_type,
+                raw=excluded.raw
+            """,
+            (
+                cev.event_id,
+                cev.event_time,
+                now,
+                cev.cloud_provider,
+                cev.account_scope,
+                cev.source_type,
+                cev.schema_version,
+                sigma_doc.get("eventSource"),
+                cev.operation,
+                cev.region,
+                cev.source_ip,
+                cev.user_agent,
+                cev.principal_type,
+                cev.principal,
+                str(cev.request_metadata.get("error_code") or "") or None,
+                raw_json,
+            ),
+        )
+        inserted += 1
+        counts[cev.cloud_provider] = counts.get(cev.cloud_provider, 0) + 1
+    conn.commit()
+    return {"ingested": inserted, "by_cloud": counts}
 
 
 def load_manifest(path: Path | None = None) -> dict[str, int | None]:

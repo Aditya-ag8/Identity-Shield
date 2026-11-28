@@ -152,18 +152,28 @@ def _up(args) -> int:
         return 2
 
     variables = _parse_vars(args.var)
-    init = provision.init(args.workdir)
+    if getattr(args, "region", None) and "region" not in variables:
+        variables["region"] = args.region
+
+    session = _session_from_args(args)
+    tf_env = provision.aws_env(
+        session=session if session.has_credentials() else None,
+        profile=getattr(args, "profile", None),
+        region=getattr(args, "region", None),
+    )
+
+    init = provision.init(args.workdir, env=tf_env)
     if not init.ok:
         print("terraform init failed:", file=sys.stderr)
         print(init.tail(), file=sys.stderr)
         return 1
 
     if args.plan:
-        result = provision.plan(args.workdir, variables)
+        result = provision.plan(args.workdir, variables, env=tf_env)
         print(result.stdout or result.stderr)
         return 0 if result.ok else 1
 
-    result = provision.apply(args.workdir, variables, timeout=args.timeout)
+    result = provision.apply(args.workdir, variables, timeout=args.timeout, env=tf_env)
     if not result.ok:
         print("terraform apply failed:", file=sys.stderr)
         print(result.tail(), file=sys.stderr)
@@ -177,7 +187,6 @@ def _up(args) -> int:
         for key, value in outputs.items():
             print(f"  {key}: {value}")
 
-    session = _session_from_args(args)
     if session.has_credentials():
         snapshot = census_module.collect(session, region=args.region)
         if not args.json:
@@ -246,6 +255,8 @@ def _add_doctor(commands) -> None:
     doctor_parser.add_argument("--workdir", default=None)
     doctor_parser.add_argument("--region", default=None)
     doctor_parser.add_argument("--profile", default=None)
+    doctor_parser.add_argument("--role-arn", default=None)
+    doctor_parser.add_argument("--external-id", default=None)
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.add_argument("--strict", action="store_true", help="exit non-zero if not ready")
     doctor_parser.set_defaults(handler=_doctor)
@@ -256,6 +267,8 @@ def _add_status(commands) -> None:
     status_parser.add_argument("--region", default=None)
     status_parser.add_argument("--lab-name", default=None)
     status_parser.add_argument("--profile", default=None)
+    status_parser.add_argument("--role-arn", default=None)
+    status_parser.add_argument("--external-id", default=None)
     status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=_census, out=None)
 
@@ -265,6 +278,8 @@ def _add_census(commands) -> None:
     census_parser.add_argument("--region", default=None)
     census_parser.add_argument("--lab-name", default=None)
     census_parser.add_argument("--profile", default=None)
+    census_parser.add_argument("--role-arn", default=None)
+    census_parser.add_argument("--external-id", default=None)
     census_parser.add_argument("--out", default=None)
     census_parser.add_argument("--json", action="store_true")
     census_parser.set_defaults(handler=_census)
@@ -275,6 +290,8 @@ def _add_up(commands) -> None:
     up_parser.add_argument("--workdir", default=None)
     up_parser.add_argument("--region", default=None)
     up_parser.add_argument("--profile", default=None)
+    up_parser.add_argument("--role-arn", default=None)
+    up_parser.add_argument("--external-id", default=None)
     up_parser.add_argument("--var", action="append", help="terraform variable as key=value")
     up_parser.add_argument("--plan", action="store_true", help="plan only")
     up_parser.add_argument("--yes", action="store_true", help="confirm apply")
@@ -288,6 +305,8 @@ def _add_down(commands) -> None:
     down_parser.add_argument("--workdir", default=None)
     down_parser.add_argument("--region", default=None)
     down_parser.add_argument("--profile", default=None)
+    down_parser.add_argument("--role-arn", default=None)
+    down_parser.add_argument("--external-id", default=None)
     down_parser.add_argument("--lab-name", default=None)
     down_parser.add_argument("--report", default=None)
     down_parser.add_argument("--check-only", action="store_true", help="census only, no destroy")

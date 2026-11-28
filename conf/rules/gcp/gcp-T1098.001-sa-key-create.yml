@@ -1,0 +1,24 @@
+title: GCP Service Account Key Created
+id: c7a1d801-3b2a-4c9e-8d10-1a2b3c4d0001
+status: test
+description: Detects creation of a user-managed GCP Service Account private key via Cloud Audit Logs.
+references:
+  - https://attack.mitre.org/techniques/T1098/001/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.persistence
+  - attack.t1098.001
+logsource:
+  product: gcp
+  service: gcp.audit
+detection:
+  selection:
+    protoPayload.serviceName: iam.googleapis.com
+    protoPayload.methodName|contains: CreateServiceAccountKey
+  condition: selection and not filter_denied
+  filter_denied:
+    protoPayload.status.code: 7
+falsepositives:
+  - Approved service account key provisioning
+level: high

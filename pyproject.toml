@@ -11,6 +11,8 @@ dependencies = [
     "pandas>=2.0",
     "streamlit>=1.30",
     "plotly>=5.18",
+    "starlette>=0.37",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]

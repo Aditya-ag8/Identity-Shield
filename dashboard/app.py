@@ -73,24 +73,28 @@ def _connect(db_path: str):
 
 
 def ensure_schema_and_rules(db_path: Path) -> None:
-    """Ensure technique definitions and baseline/improved rulesets exist without injecting dummy events."""
+    """Ensure schema tables, techniques, and rulesets exist without injecting dummy events."""
     if not db_path.exists():
         return
     try:
         conn = _connect(str(db_path))
         try:
+            from identity_shield.db.init import ensure_tables
             from identity_shield.detect import loader, replay
 
+            ensure_tables(conn)
             t_count = conn.execute("SELECT COUNT(*) FROM technique").fetchone()[0]
             if t_count == 0:
                 loader.load_techniques(conn)
-            r_count = conn.execute("SELECT COUNT(*) FROM ruleset").fetchone()[0]
-            if r_count == 0:
-                try:
-                    replay.load_ruleset(conn, "baseline-v1")
-                    replay.load_ruleset(conn, "improved-v1")
-                except Exception:
-                    pass
+            existing_rs = {
+                r[0] for r in conn.execute("SELECT ruleset_version FROM ruleset").fetchall()
+            }
+            for rs_name in replay.load_ruleset_config():
+                if not existing_rs or rs_name not in existing_rs:
+                    try:
+                        replay.load_ruleset(conn, rs_name)
+                    except Exception:
+                        pass
         finally:
             conn.close()
     except Exception:
@@ -657,7 +661,7 @@ def main() -> None:
     # 2. Sidebar Configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
-        default_db = os.environ.get("IDENTITY_SHIELD_DB", str(config.DEFAULT_DB))
+        default_db = str(config.resolve_db())
         db_path = Path(st.text_input("Database (SQLite)", value=default_db, help="Local SQLite file"))
 
         ready, reason = database_ready(db_path)
@@ -826,47 +830,40 @@ def main() -> None:
         with c_connect:
             if st.button("🚀 Test & Connect", type="primary"):
                 try:
-                    import boto3
-                    from identity_shield.lab.aws import GuardedSession
-                    from identity_shield.lab.integration import DeploymentScope, assume_role, classify_account
+                    from identity_shield import service
 
-                    # Build session
-                    if auth_method == "AWS CLI Profile":
-                        boto_session = boto3.Session(profile_name=profile_name or None, region_name=aws_region)
-                    elif auth_method == "STS AssumeRole (Cross-Account)":
-                        base_session = boto3.Session(region_name=aws_region)
-                        boto_session = assume_role(
-                            base_session,
-                            role_arn=role_arn,
-                            external_id=external_id or None,
-                            session_name=session_name,
-                        )
-                    else:
-                        boto_session = boto3.Session(
-                            aws_access_key_id=access_key or None,
-                            aws_secret_access_key=secret_key or None,
-                            aws_session_token=session_token or None,
-                            region_name=aws_region,
-                        )
-
-                    guarded = GuardedSession(boto_session, region_name=aws_region)
-                    scope_enum = DeploymentScope.ORGANIZATION if deployment_scope == "organization" else DeploymentScope.SINGLE_ACCOUNT
-                    classification = classify_account(guarded, scope=scope_enum)
-
-                    sts_identity = boto_session.client("sts", region_name=aws_region).get_caller_identity()
-                    caller_arn = sts_identity.get("Arn", "unknown")
-                    account_id = sts_identity.get("Account", "unknown")
-
+                    payload = {
+                        "auth_mode": (
+                            "profile"
+                            if auth_method == "AWS CLI Profile"
+                            else ("assume_role" if auth_method == "STS AssumeRole (Cross-Account)" else "in_memory")
+                        ),
+                        "region": aws_region,
+                        "scope": deployment_scope,
+                        "profile_name": profile_name,
+                        "role_arn": role_arn,
+                        "external_id": external_id,
+                        "session_name": session_name,
+                        "access_key": access_key,
+                        "secret_key": secret_key,
+                        "session_token": session_token,
+                    }
+                    conn_status = service.connect_aws(payload)
+                    classification = conn_status.get("classification", {})
                     st.session_state["aws_connected"] = True
                     st.session_state["session_info"] = {
-                        "account_id": account_id,
-                        "caller_arn": caller_arn,
+                        "account_id": conn_status.get("account_id", "unknown"),
+                        "caller_arn": conn_status.get("caller_arn", "unknown"),
                         "region": aws_region,
-                        "org_status": classification.organization_status.value,
-                        "effective_scope": classification.effective_scope.value,
-                        "detail": classification.detail,
-                        "can_list_accounts": classification.can_list_accounts,
-                        "accounts": list(classification.accounts),
+                        "org_status": classification.get("organization_status", "unknown"),
+                        "effective_scope": classification.get("effective_scope", deployment_scope),
+                        "detail": classification.get("detail", ""),
+                        "can_list_accounts": classification.get("can_list_accounts", False),
+                        "accounts": list(classification.get("accounts", [])),
+                        "auth_mode": payload["auth_mode"],
+                        "profile_name": profile_name,
+                        "role_arn": role_arn,
+                        "external_id": external_id,
                     }
                     st.success("Authentication & Account Classification Succeeded!")
                     st.rerun()
@@ -900,18 +897,13 @@ def main() -> None:
         with col_doc:
             if st.button("🩺 Run Environment Doctor", help="Verify Terraform, AWS credentials, and guardrails"):
                 try:
-                    import boto3
-                    from identity_shield.lab.aws import GuardedSession
-                    from identity_shield.lab.doctor import run_doctor
+                    from identity_shield import service
 
-                    reg = conn_info.get("region", "us-east-1")
-                    boto_sess = boto3.Session(region_name=reg)
-                    session = GuardedSession(boto_sess, region_name=reg)
-                    doc_report = run_doctor(session)
-                    st.subheader(f"Doctor Status: {'OK' if doc_report.ok else 'FINDINGS'}")
+                    doc_report = service.run_lab_doctor()
+                    st.subheader(f"Doctor Status: {'OK' if doc_report.get('ok') else 'FINDINGS'}")
                     check_rows = [
-                        {"Check": c.name, "Status": c.status.upper(), "Detail": c.detail, "Remedy": c.remedy or ""}
-                        for c in doc_report.checks
+                        {"Check": c["name"], "Status": c["status"].upper(), "Detail": c["detail"], "Remedy": c.get("remedy") or ""}
+                        for c in doc_report.get("checks", [])
                     ]
                     st.dataframe(pd.DataFrame(check_rows), hide_index=True, width="stretch")
                 except Exception as exc:
@@ -920,41 +912,55 @@ def main() -> None:
         with col_cen:
             if st.button("🔍 Run Live Resource Census", help="Read-only enumeration of lab resources"):
                 try:
-                    import boto3
-                    from identity_shield.lab.aws import GuardedSession
-                    from identity_shield.lab.census import collect
+                    from identity_shield import service
 
-                    reg = conn_info.get("region", "us-east-1")
-                    acct = conn_info.get("account_id")
-                    boto_sess = boto3.Session(region_name=reg)
-                    session = GuardedSession(boto_sess, region_name=reg)
-                    census_result = collect(session, region=reg, account_id=acct)
-                    st.subheader(f"Discovered Resources: {len(census_result.resources)}")
-                    if census_result.resources:
-                        res_rows = [
-                            {"Service": r.service, "Kind": r.kind, "Identifier": r.identifier, "ARN": r.arn}
-                            for r in census_result.resources
-                        ]
-                        st.dataframe(pd.DataFrame(res_rows), hide_index=True, width="stretch")
+                    probe = service.run_live_resource_probe()
+                    if not probe.get("connected"):
+                        st.warning(probe.get("error") or "AWS session not connected.")
                     else:
-                        st.info("No resources with prefix 'is-' or tag 'identity-shield:lab' found in this account.")
-                    if census_result.errors:
-                        st.warning(f"{len(census_result.errors)} permission/service note(s)")
+                        resources = (probe.get("census") or {}).get("resources", [])
+                        ec2_list = (probe.get("inventory") or {}).get("ec2_instances", [])
+                        st.subheader(f"Discovered Lab Resources: {len(resources)} | EC2 Instances: {len(ec2_list)}")
+                        if resources:
+                            res_rows = [
+                                {"Service": r["service"], "Kind": r["kind"], "Identifier": r["identifier"], "ARN": r["arn"]}
+                                for r in resources
+                            ]
+                            st.dataframe(pd.DataFrame(res_rows), hide_index=True, width="stretch")
+                        else:
+                            st.info("No resources with prefix 'is-' or tag 'identity-shield:lab' found in this account.")
+                        if ec2_list:
+                            st.dataframe(pd.DataFrame(ec2_list), hide_index=True, width="stretch")
                 except Exception as exc:
                     st.error(f"Census failed: {exc}")
 
         st.divider()
         st.subheader("Target Resource Configuration")
         st.caption("Configure target resource names for live testing:")
+        from identity_shield import settings as _settings
+
+        _bound = _settings.get_resources()
         tc1, tc2 = st.columns(2)
         with tc1:
-            cfg_bucket = st.text_input("Crown Jewels S3 Bucket", value="is-data-bucket", key="cfg_bucket")
-            cfg_key = st.text_input("Target S3 Object Key", value="finance/q4.csv", key="cfg_key")
-            cfg_trail = st.text_input("CloudTrail Name", value="is-trail", key="cfg_trail")
+            cfg_bucket = st.text_input("Crown Jewels S3 Bucket", value=_bound.data_bucket, key="cfg_bucket")
+            cfg_key = st.text_input("Target S3 Object Key", value=_bound.data_key, key="cfg_key")
+            cfg_trail = st.text_input("CloudTrail Name", value=_bound.trail_name, key="cfg_trail")
         with tc2:
-            cfg_queue = st.text_input("SQS Queue URL", value="https://sqs.us-east-1.amazonaws.com/123456789012/is-events", key="cfg_queue")
-            cfg_instance = st.text_input("EC2 Instance ID (T1552.005)", value="", placeholder="i-0abcdef1234567890", key="cfg_instance")
-            cfg_user = st.text_input("Test IAM User", value="is-test-user", key="cfg_user")
+            cfg_queue = st.text_input("SQS Queue URL", value=_bound.queue_url, key="cfg_queue")
+            cfg_instance = st.text_input("EC2 Instance ID (T1552.005)", value=_bound.instance_id, placeholder="i-0abcdef1234567890", key="cfg_instance")
+            cfg_user = st.text_input("Test IAM User", value=_bound.test_user_name, key="cfg_user")
+        if st.button("Save Target Resource Bindings"):
+            _settings.update_resources(
+                {
+                    "data_bucket": cfg_bucket,
+                    "data_key": cfg_key,
+                    "trail_name": cfg_trail,
+                    "queue_url": cfg_queue,
+                    "instance_id": cfg_instance,
+                    "test_user_name": cfg_user,
+                }
+            )
+            st.success("Target resources saved.")
 
     # --------------------------------------------------------------------------
     # TAB 3: Attack Simulation & Campaign Runner
@@ -1011,9 +1017,43 @@ def main() -> None:
             st.warning("⚠️ Live AWS Campaign requires an active connection in the 'AWS Connect' tab.")
 
         if st.button("🚀 Launch Campaign", type="primary"):
-            cmd = [sys.executable, "-m", "identity_shield.cli", "runner", "campaign", "--db", str(db_path), "--yes"]
+            cmd = [
+                sys.executable,
+                "-m",
+                "identity_shield.cli",
+                "runner",
+                "campaign",
+                "--db",
+                str(db_path),
+                "--repetitions",
+                str(reps),
+                "--yes",
+            ]
             if is_synthetic:
                 cmd.append("--synthetic")
+            else:
+                if conn_info.get("region"):
+                    cmd.extend(["--region", str(conn_info["region"])])
+                if conn_info.get("account_id"):
+                    cmd.extend(["--account-id", str(conn_info["account_id"])])
+                if conn_info.get("profile_name"):
+                    cmd.extend(["--profile", str(conn_info["profile_name"])])
+                if conn_info.get("role_arn"):
+                    cmd.extend(["--role-arn", str(conn_info["role_arn"])])
+                if conn_info.get("external_id"):
+                    cmd.extend(["--external-id", str(conn_info["external_id"])])
+                if st.session_state.get("cfg_bucket"):
+                    cmd.extend(["--bucket", str(st.session_state["cfg_bucket"])])
+                if st.session_state.get("cfg_key"):
+                    cmd.extend(["--key", str(st.session_state["cfg_key"])])
+                if st.session_state.get("cfg_trail"):
+                    cmd.extend(["--trail-name", str(st.session_state["cfg_trail"])])
+                if st.session_state.get("cfg_queue"):
+                    cmd.extend(["--queue-url", str(st.session_state["cfg_queue"])])
+                if st.session_state.get("cfg_instance"):
+                    cmd.extend(["--instance-id", str(st.session_state["cfg_instance"])])
+                if st.session_state.get("cfg_user"):
+                    cmd.extend(["--test-user", str(st.session_state["cfg_user"])])
             for s in sel_sets:
                 cmd.extend(["--set", s])
             for t in sel_techs:

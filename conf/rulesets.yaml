@@ -32,6 +32,35 @@ rulesets:
     manifest_sha256: "fb6d78778541f4de7c59f9749617c1b0154d0f47e5cf367c2de18496625fa547"
     git_sha: "9b103b1cd162cf031fdd3ca0abe7aa54ee828607"
 
+  gcp-baseline-v1:
+    description: >
+      GCP Cloud Audit Log baseline detection rules covering IAM key creation,
+      SetIamPolicy escalation, GCS reads, Secret Manager access, and Compute discovery.
+    sigma_dirs:
+      - conf/rules/gcp
+    include_python_rules: false
+    source: sigma
+
+  azure-baseline-v1:
+    description: >
+      Microsoft Azure Activity Log & Entra ID baseline detection rules covering
+      RBAC role assignments, SPN credentials, Key Vault reads, sign-ins, and VM discovery.
+    sigma_dirs:
+      - conf/rules/azure
+    include_python_rules: false
+    source: sigma
+
+  multicloud-v1:
+    description: >
+      Unified multi-cloud detection bundle combining AWS baseline, GCP Audit,
+      and Azure Activity / Entra Sigma rules cleanly scoped by logsource.product.
+    sigma_dirs:
+      - conf/rules/baseline
+      - conf/rules/gcp
+      - conf/rules/azure
+    include_python_rules: false
+    source: sigma
+
 # Optional: vendored community corpus, used only for the compile-rate report.
 # Pull with scripts/pull_sigma.ps1. Not part of any rule set by default.
 community:

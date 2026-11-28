@@ -44,6 +44,7 @@ TERRAFORM_LAB: Path = INFRA / "terraform" / "envs" / "lab"
 DEFAULT_DB: Path = Path(os.environ.get(_ENV_DB, DATA / "identity_shield.db"))
 
 TECHNIQUES_YAML = CONF / "techniques.yaml"
+MULTICLOUD_TECHNIQUES_YAML = CONF / "techniques_multicloud.yaml"
 FACTORS_YAML = CONF / "factors.yaml"
 RULESETS_YAML = CONF / "rulesets.yaml"
 SCHEMA_SQL = Path(__file__).resolve().parent / "db" / "schema.sql"
@@ -52,5 +53,29 @@ FIXTURE_ROOT = FIXTURES / "cloudtrail"
 FIXTURE_MANIFEST = FIXTURES / "manifest.yaml"
 
 
+def _linked_storage_db() -> str:
+    """Read optional linked DB path from workspace_config without importing settings."""
+    import json
+
+    cfg_override = os.environ.get("IDENTITY_SHIELD_CONFIG")
+    cfg_path = Path(cfg_override).expanduser().resolve() if cfg_override else (DATA / "workspace_config.json")
+    if not cfg_path.exists():
+        return ""
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        val = str(((raw.get("storage") or {}).get("db_path")) or "").strip()
+        return val
+    except Exception:
+        return ""
+
+
 def resolve_db(path: str | Path | None = None) -> Path:
-    return Path(path).expanduser().resolve() if path else DEFAULT_DB
+    if path:
+        return Path(path).expanduser().resolve()
+    env_db = os.environ.get(_ENV_DB)
+    if env_db:
+        return Path(env_db).expanduser().resolve()
+    linked = _linked_storage_db()
+    if linked:
+        return Path(linked).expanduser().resolve()
+    return DEFAULT_DB

@@ -7,12 +7,20 @@ dist/
 .pytest_cache/
 .ruff_cache/
 
-# local data
+# local data & runtime artefacts
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.db-journal
 data/report.*
 data/findings.json
+data/rules/
+data/proxy_ca/
+data/workspace_config.json
+data/attack_overrides.json
+data/cloudfox_inventory.json
+data/multicloud_inventory.json
+data/closed_loop_last.json
 
 # tool scratch
 .ua/

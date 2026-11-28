@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Identity Shield</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">Identity Shield</div>
+          <div class="brand-sub">Control Plane</div>
+        </div>
+      </div>
+
+      <nav class="nav-groups">
+        <div class="nav-group-label">Setup</div>
+        <button class="nav-item active" data-view="overview">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+          <span>Overview</span>
+        </button>
+        <button class="nav-item" data-view="connections">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Connections</span>
+        </button>
+        <button class="nav-item" data-view="lab">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="7" rx="1"/><rect x="2" y="14" width="20" height="7" rx="1"/></svg>
+          <span>Lab Resources</span>
+        </button>
+
+        <div class="nav-group-label">Testing</div>
+        <button class="nav-item" data-view="attacks">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span>Attacks</span>
+        </button>
+        <button class="nav-item" data-view="variants">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/></svg>
+          <span>Variants</span>
+        </button>
+        <button class="nav-item" data-view="campaigns">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <span>Campaigns</span>
+        </button>
+
+        <div class="nav-group-label">Detection</div>
+        <button class="nav-item" data-view="proxy">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span>Live Proxy</span>
+        </button>
+        <button class="nav-item" data-view="rules">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>Rules &amp; Thresholds</span>
+        </button>
+        <button class="nav-item" data-view="logs">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span>Logs</span>
+        </button>
+        <button class="nav-item" data-view="cli">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span>CLI Console</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="db-pill">
+          <span class="dot" id="sidebar-db-dot"></span>
+          <div class="db-meta">
+            <div class="db-label">Database</div>
+            <div class="db-path mono" id="sidebar-db-counts">0 runs · 0 events</div>
+          </div>
+        </div>
+        <button class="btn btn-secondary btn-sm full-width" id="btn-reset-db">Reset Database</button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="view-title" id="topbar-title">Overview</h1>
+          <button type="button" class="status-chip" id="pill-aws" data-goto="connections" title="Manage AWS Connection">
+            <span class="dot muted"></span>
+            <span>AWS: Disconnected</span>
+          </button>
+          <button type="button" class="status-chip" id="pill-proxy" data-goto="proxy" title="Manage Live Security Proxy">
+            <span class="dot muted"></span>
+            <span>Proxy: Stopped</span>
+          </button>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-refresh-all">Refresh</button>
+          <button class="btn btn-primary btn-sm" data-goto="campaigns">Run Campaign</button>
+        </div>
+      </header>
+
+      <main class="content" id="main-content"></main>
+    </div>
+  </div>
+
+  <!-- Drawer -->
+  <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+  <aside class="drawer hidden" id="detail-drawer">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-eyebrow" id="drawer-eyebrow">DETAILS</div>
+        <h2 class="drawer-title" id="drawer-title">Details</h2>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="drawer-close">Close</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <!-- Toast Stack -->
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

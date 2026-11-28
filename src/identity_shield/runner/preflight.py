@@ -42,11 +42,13 @@ def _check_identity(ctx: TrialContext, clients: Mapping[str, Any] | None) -> Pre
 
 
 def _check_region(ctx: TrialContext) -> PreflightCheck:
-    if ctx.region not in ALLOWED_REGIONS:
+    custom_regions = ctx.lab.get("allowed_regions")
+    allowed = set(str(r) for r in custom_regions) if custom_regions else ALLOWED_REGIONS
+    if ctx.region not in allowed:
         return PreflightCheck(
             "region",
             "fail",
-            f"region {ctx.region} is not in the allow-list {sorted(ALLOWED_REGIONS)}",
+            f"region {ctx.region} is not in the allow-list {sorted(allowed)}",
         )
     return PreflightCheck("region", "ok", ctx.region)
 
@@ -79,11 +81,12 @@ def _check_trail(ctx: TrialContext, clients: Mapping[str, Any] | None) -> Prefli
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     lag = (datetime.now(timezone.utc) - moment).total_seconds()
-    if lag > MAX_DELIVERY_LAG_SECONDS:
+    max_lag = int(ctx.lab.get("max_delivery_lag_seconds") or MAX_DELIVERY_LAG_SECONDS)
+    if lag > max_lag:
         return PreflightCheck(
             "trail",
             "fail",
-            f"last delivery was {lag / 60:.1f} min ago (> {MAX_DELIVERY_LAG_SECONDS / 60:.0f})",
+            f"last delivery was {lag / 60:.1f} min ago (> {max_lag / 60:.0f})",
         )
     return PreflightCheck("trail", "ok", f"logging, last delivery {lag:.0f}s ago")
 
@@ -166,6 +169,7 @@ def _check_capability(ctx: TrialContext) -> PreflightCheck:
         ctx.technique.technique_id,
         ctx.lab,
         synthetic=ctx.synthetic,
+        technique=ctx.technique,
     )
     if not cap.available:
         return PreflightCheck(

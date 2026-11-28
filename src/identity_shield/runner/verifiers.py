@@ -89,6 +89,11 @@ def verify(ctx: TrialContext, result: ExecutionResult) -> Verification:
         count = _services_ok(evidence)
         return Verification(count >= minimum, f"{count} service(s) responded (need {minimum})", {"services": count})
 
+    if kind == "api_calls_succeeded":
+        minimum = _minimum(spec, 1)
+        count = int(evidence.get("succeeded_calls") if evidence.get("succeeded_calls") is not None else _services_ok(evidence))
+        return Verification(count >= minimum, f"{count} API call(s) succeeded (need {minimum})", {"succeeded_calls": count})
+
     if kind == "inventory_snapshot":
         minimum = _minimum(spec, 3)
         count = sum(

@@ -9,7 +9,7 @@ marked as unavailable rather than mistakenly recorded as evasions or detections.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,7 @@ def check_technique_capability(
     lab_config: Mapping[str, Any],
     *,
     synthetic: bool = False,
+    technique: Any | None = None,
 ) -> TechniqueCapability:
     """Return whether a technique can be executed under the given lab configuration."""
     if synthetic:
@@ -143,6 +144,35 @@ def check_technique_capability(
             limitations="Requires S3 data event logging enabled for the designated crown jewels bucket.",
         )
 
+    if technique is not None and (getattr(technique, "custom", False) or getattr(technique, "api_calls", ())):
+        if getattr(technique, "requires_data_events", False) and not enable_data_events:
+            return TechniqueCapability(
+                technique_id=technique_id,
+                available=False,
+                reason=f"{technique_id} requires S3 data events (enable_data_events=true)",
+                required_services=tuple(
+                    {str(c.get("service")) for c in getattr(technique, "api_calls", ()) if c.get("service")}
+                    or {"cloudtrail"}
+                ),
+                telemetry_dependency="s3_data_events",
+                limitations="Enable S3 data events in Thresholds / Terraform before live run.",
+            )
+        services = tuple(
+            sorted(
+                {str(c.get("service")) for c in getattr(technique, "api_calls", ()) if c.get("service")}
+                or {a.split(":", 1)[0] for a in getattr(technique, "required_actions", ()) if ":" in a}
+                or {"sts"}
+            )
+        )
+        return TechniqueCapability(
+            technique_id=technique_id,
+            available=True,
+            reason="Custom technique ready with active AWS CloudTrail management telemetry",
+            required_services=services,
+            telemetry_dependency="s3_data_events" if getattr(technique, "requires_data_events", False) else "management_events",
+            limitations=str(getattr(technique, "notes", "") or "Custom AWS API test execution."),
+        )
+
     return TechniqueCapability(
         technique_id=technique_id,
         available=False,
@@ -153,9 +183,21 @@ def check_technique_capability(
     )
 
 
-def capability_matrix(lab_config: Mapping[str, Any], *, synthetic: bool = False) -> dict[str, dict[str, Any]]:
-    """Return capability status for all eight in-scope techniques."""
-    techniques = [
+def capability_matrix(
+    lab_config: Mapping[str, Any],
+    *,
+    synthetic: bool = False,
+    techniques: Sequence[Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return capability status for all active in-scope techniques."""
+    if techniques is not None:
+        return {
+            tech.technique_id: check_technique_capability(
+                tech.technique_id, lab_config, synthetic=synthetic, technique=tech
+            ).to_dict()
+            for tech in techniques
+        }
+    default_techniques = [
         "T1087.004",
         "T1526",
         "T1580",
@@ -167,5 +209,5 @@ def capability_matrix(lab_config: Mapping[str, Any], *, synthetic: bool = False)
     ]
     return {
         tech: check_technique_capability(tech, lab_config, synthetic=synthetic).to_dict()
-        for tech in techniques
+        for tech in default_techniques
     }

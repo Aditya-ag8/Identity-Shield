@@ -72,14 +72,26 @@ def _select(
     variants: list[Variant] = []
     if wanted:
         path = config.VARIANTS_DIR / "variants.jsonl"
+        loaded_rows = _load_file(path, include_holdout=include_holdout)
+        active_ids = {t.technique_id for t in catalogue.techniques}
+        wanted_techs = {name.upper() for name in techniques} if techniques else active_ids
+        existing_techs = {v.technique_id for v in loaded_rows}
+        missing_techs = wanted_techs - existing_techs
+        if not loaded_rows or missing_techs:
+            from identity_shield.contracts import write_variants
+            from identity_shield.variants.generator import GenerationOptions, generate
+
+            generated = generate(catalogue, GenerationOptions())
+            loaded_rows = [
+                v for v in generated.variants
+                if include_holdout or v.variant_set != "holdout"
+            ]
+            write_variants(path, list(generated.variants))
         variants.extend(
             variant
-            for variant in _load_file(path, include_holdout=include_holdout)
+            for variant in loaded_rows
             if variant.variant_set in wanted
-            and (
-                not techniques
-                or variant.technique_id in {name.upper() for name in techniques}
-            )
+            and variant.technique_id in wanted_techs
         )
     if benign:
         path = config.VARIANTS_DIR / "benign.jsonl"
@@ -156,46 +168,84 @@ def _campaign(args) -> int:
     run_id = args.run_id or _now_run_id("sim" if args.synthetic else "run")
     conn = _connect(args.db)
     try:
+        from identity_shield import settings
+        from identity_shield.lab import provision
+
+        bound = settings.get_resources()
+        thresholds = settings.get_thresholds()
+        conn_desc = settings.get_connection_descriptor()
+
+        tf_outputs: dict[str, Any] = {}
+        if not args.synthetic:
+            try:
+                tf_outputs = provision.outputs()
+            except Exception:
+                tf_outputs = {}
+
+        resolved_profile = args.profile if args.profile is not None else conn_desc.profile_name
+        resolved_region = args.region or bound.region or conn_desc.region or "eu-west-1"
+        resolved_role = getattr(args, "role_arn", None) or (
+            conn_desc.role_arn if conn_desc.auth_mode == "assume_role" else None
+        )
+        resolved_ext = getattr(args, "external_id", None) or (
+            conn_desc.external_id if conn_desc.auth_mode == "assume_role" else None
+        )
+
         _persist(conn, variants, catalogue)
         session = None
+        resolved_account = args.account_id
         if not args.synthetic:
             from identity_shield.lab.aws import LabSession
 
-            if getattr(args, "role_arn", None):
+            runtime_boto = settings.RUNTIME_SESSION.boto_session()
+            if resolved_role and not runtime_boto:
                 import boto3
                 from identity_shield.lab import integration
 
-                base = boto3.Session(region_name=args.region, profile_name=args.profile or None)
-                assumed = integration.assume_role(base, args.role_arn, getattr(args, "external_id", None))
-                session = LabSession(session=assumed, region_name=args.region)
+                base = boto3.Session(region_name=resolved_region, profile_name=resolved_profile or None)
+                assumed = integration.assume_role(base, resolved_role, resolved_ext)
+                session = LabSession(session=assumed, region_name=resolved_region)
+            elif runtime_boto is not None and not getattr(args, "profile", None) and not getattr(args, "role_arn", None):
+                session = LabSession(session=runtime_boto, region_name=resolved_region)
             else:
                 session = LabSession(
-                    region_name=args.region, profile_name=args.profile or None
+                    region_name=resolved_region, profile_name=resolved_profile or None
                 )
             if not session.has_credentials():
                 print(
-                    f"no AWS credentials found for profile {args.profile!r}",
+                    f"no AWS credentials found for profile {resolved_profile!r}",
                     file=sys.stderr,
                 )
                 return 2
+            if not resolved_account:
+                try:
+                    resolved_account = session.account_id()
+                except Exception:
+                    resolved_account = "123456789012"
+        resolved_account = resolved_account or "123456789012"
+
         lab = {
-            "queue_url": args.queue_url,
-            "trail_name": args.trail_name,
-            "data_bucket": args.bucket,
-            "data_key": args.key,
-            "instance_id": args.instance_id,
-            "test_user_name": args.test_user,
-            "admin_role_name": args.admin_role,
-            "aws_profile": args.profile,
+            "queue_url": args.queue_url or bound.queue_url or tf_outputs.get("queue_url"),
+            "trail_name": args.trail_name or bound.trail_name or tf_outputs.get("trail_name") or "identity-shield-trail",
+            "data_bucket": args.bucket or bound.data_bucket or tf_outputs.get("data_bucket_name") or tf_outputs.get("data_bucket") or "is-lab-crown-jewels",
+            "data_key": args.key or bound.data_key or tf_outputs.get("data_key") or "finance/q4.csv",
+            "instance_id": args.instance_id or bound.instance_id or tf_outputs.get("instance_id"),
+            "test_user_name": args.test_user or bound.test_user_name or tf_outputs.get("test_user_name") or "is-test-user",
+            "admin_role_name": args.admin_role or bound.admin_role_name or tf_outputs.get("admin_role_name") or "is-admin-role",
+            "aws_profile": resolved_profile or "lab",
             "ruleset_version": args.ruleset,
+            "enable_data_events": thresholds.enable_data_events,
+            "enable_instance": thresholds.enable_instance,
+            "allowed_regions": thresholds.allowed_regions,
+            "max_delivery_lag_seconds": thresholds.max_delivery_lag_minutes * 60,
         }
         result = orchestrator.run_campaign(
             conn,
             run_id=run_id,
             variants=variants,
             catalogue=catalogue,
-            account_id=args.account_id or "123456789012",
-            region=args.region,
+            account_id=resolved_account,
+            region=resolved_region,
             repetitions=args.repetitions,
             synthetic=args.synthetic,
             session=session,
@@ -206,7 +256,7 @@ def _campaign(args) -> int:
         if args.replay:
             from identity_shield.detect import replay
 
-            for ruleset in (args.ruleset, "improved-v1"):
+            for ruleset in (args.ruleset, "improved-v1", "custom-v1"):
                 try:
                     loaded = replay.load_ruleset(conn, ruleset)
                     replay.run_replay(conn, loaded)
@@ -248,28 +298,58 @@ def _preflight_cmd(args) -> int:
         technique = catalogue.technique(variant.technique_id)
         from identity_shield.lab.aws import LabSession
 
+        from identity_shield import settings
+        from identity_shield.lab import provision
+
+        bound = settings.get_resources()
+        thresholds = settings.get_thresholds()
+        conn_desc = settings.get_connection_descriptor()
+
+        resolved_profile = args.profile if getattr(args, "profile", None) else conn_desc.profile_name
+        resolved_region = args.region or bound.region or conn_desc.region or "eu-west-1"
+
         session = (
             None
             if args.synthetic
-            else LabSession(region_name=args.region, profile_name=args.profile or None)
+            else LabSession(region_name=resolved_region, profile_name=resolved_profile or None)
         )
         if session is not None and not session.has_credentials():
             print("no AWS credentials found", file=sys.stderr)
             return 2
+
+        resolved_account = args.account_id
+        if session is not None and not resolved_account:
+            try:
+                resolved_account = session.account_id()
+            except Exception:
+                resolved_account = "123456789012"
+        resolved_account = resolved_account or "123456789012"
+
+        tf_outputs: dict[str, Any] = {}
+        if not args.synthetic:
+            try:
+                tf_outputs = provision.outputs()
+            except Exception:
+                tf_outputs = {}
+
         ctx = TrialContext(
             run_id=args.run_id or _now_run_id("preflight"),
             variant=variant,
             technique=technique,
             repetition=1,
-            account_id=args.account_id or "123456789012",
-            region=args.region,
+            account_id=resolved_account,
+            region=resolved_region,
             lab={
-                "trail_name": args.trail_name,
-                "queue_url": args.queue_url,
-                "test_user_name": args.test_user,
-                "admin_role_name": args.admin_role,
-                "data_bucket": args.bucket,
-                "instance_id": args.instance_id,
+                "trail_name": args.trail_name or bound.trail_name or tf_outputs.get("trail_name") or "identity-shield-trail",
+                "queue_url": args.queue_url or bound.queue_url or tf_outputs.get("queue_url"),
+                "test_user_name": args.test_user or bound.test_user_name or "is-test-user",
+                "admin_role_name": args.admin_role or bound.admin_role_name or "is-admin-role",
+                "data_bucket": args.bucket or bound.data_bucket or tf_outputs.get("data_bucket_name") or "is-lab-crown-jewels",
+                "instance_id": args.instance_id or bound.instance_id or tf_outputs.get("instance_id"),
+                "enable_data_events": thresholds.enable_data_events,
+                "enable_instance": thresholds.enable_instance,
+                "allowed_regions": thresholds.allowed_regions,
+                "max_delivery_lag_seconds": thresholds.max_delivery_lag_minutes * 60,
             },
             synthetic=args.synthetic,
             session=session,
@@ -355,15 +435,15 @@ def _add_campaign(commands) -> None:
     parser.add_argument("--no-replay", action="store_false", dest="replay")
     parser.add_argument("--account-id", default=None)
     parser.add_argument("--queue-url", default=None)
-    parser.add_argument("--trail-name", default="identity-shield-trail")
-    parser.add_argument("--bucket", default="is-lab-crown-jewels")
-    parser.add_argument("--key", default="finance/q4.csv")
+    parser.add_argument("--trail-name", default=None)
+    parser.add_argument("--bucket", default=None)
+    parser.add_argument("--key", default=None)
     parser.add_argument("--role-arn", default=None, help="Cross-account role ARN for STS AssumeRole")
     parser.add_argument("--external-id", default=None, help="External ID for STS AssumeRole")
     parser.add_argument("--instance-id", default=None)
-    parser.add_argument("--test-user", default="is-test-user")
-    parser.add_argument("--admin-role", default="is-admin-role")
-    parser.add_argument("--profile", default="lab")
+    parser.add_argument("--test-user", default=None)
+    parser.add_argument("--admin-role", default=None)
+    parser.add_argument("--profile", default=None)
     parser.add_argument("--ruleset", default="baseline-v1")
     parser.set_defaults(handler=_campaign)
 

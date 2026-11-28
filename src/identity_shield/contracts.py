@@ -45,7 +45,7 @@ ALL_VARIANT_SETS = VARIANT_SETS + BENIGN_SETS
 #: Sets that may be shown to analysis code before the holdout is unsealed.
 VISIBLE_SETS = ("baseline", "ofat", "pairwise")
 
-_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.[A-Za-z0-9_]{1,16})?$")
 _VARIANT_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 

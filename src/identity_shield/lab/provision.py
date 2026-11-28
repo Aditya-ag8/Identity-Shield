@@ -12,6 +12,7 @@ operation rather than an afterthought.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -64,10 +65,58 @@ def workdir(path: str | Path | None = None) -> Path:
 
 
 def _var_args(variables: Mapping[str, Any] | None) -> list[str]:
+    import re
+
     arguments: list[str] = []
     for key, value in (variables or {}).items():
-        arguments.extend(["-var", f"{key}={value}"])
+        clean_key = str(key).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", clean_key):
+            raise ValueError(f"Invalid Terraform variable name {key!r}")
+        text_val = str(value)
+        if "\x00" in text_val or "\n" in text_val or "\r" in text_val:
+            raise ValueError(f"Invalid control character in Terraform variable {clean_key!r}")
+        arguments.extend(["-var", f"{clean_key}={text_val}"])
     return arguments
+
+
+def aws_env(
+    *,
+    session: Any = None,
+    profile: str | None = None,
+    region: str | None = None,
+) -> dict[str, str]:
+    """Build subprocess environment variables carrying the active AWS session.
+
+    Ensures Terraform uses the exact same credentials, temporary STS tokens,
+    or AWS profile that the operator connected via CLI or GUI.
+    """
+    env = dict(os.environ)
+    if region:
+        env["AWS_REGION"] = str(region)
+        env["AWS_DEFAULT_REGION"] = str(region)
+
+    raw_session = getattr(session, "_session", session)
+    extracted = False
+    if raw_session is not None and hasattr(raw_session, "get_credentials"):
+        try:
+            creds = raw_session.get_credentials()
+            if creds is not None:
+                frozen = creds.get_frozen_credentials()
+                if frozen.access_key and frozen.secret_key:
+                    env["AWS_ACCESS_KEY_ID"] = frozen.access_key
+                    env["AWS_SECRET_ACCESS_KEY"] = frozen.secret_key
+                    if frozen.token:
+                        env["AWS_SESSION_TOKEN"] = frozen.token
+                    else:
+                        env.pop("AWS_SESSION_TOKEN", None)
+                    env.pop("AWS_PROFILE", None)
+                    extracted = True
+        except Exception:
+            extracted = False
+
+    if not extracted and profile:
+        env["AWS_PROFILE"] = str(profile)
+    return env
 
 
 def run(
@@ -75,6 +124,7 @@ def run(
     arguments: list[str],
     *,
     timeout: int = 1800,
+    env: Mapping[str, str] | None = None,
 ) -> TerraformRun:
     directory = Path(directory)
     command = (binary(), *arguments)
@@ -85,6 +135,7 @@ def run(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=dict(env) if env is not None else None,
         )
     except FileNotFoundError as exc:  # pragma: no cover - guarded by binary()
         raise TerraformUnavailable(str(exc)) from exc
@@ -103,17 +154,28 @@ def run(
     )
 
 
-def init(directory: str | Path | None = None, *, upgrade: bool = False) -> TerraformRun:
+def init(
+    directory: str | Path | None = None,
+    *,
+    upgrade: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> TerraformRun:
     arguments = ["init", "-input=false", "-no-color"]
     if upgrade:
         arguments.append("-upgrade")
-    return run(workdir(directory), arguments)
+    return run(workdir(directory), arguments, env=env)
 
 
-def plan(directory: str | Path | None = None, variables: Mapping[str, Any] | None = None) -> TerraformRun:
+def plan(
+    directory: str | Path | None = None,
+    variables: Mapping[str, Any] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> TerraformRun:
     return run(
         workdir(directory),
         ["plan", "-input=false", "-no-color", *_var_args(variables)],
+        env=env,
     )
 
 
@@ -123,11 +185,12 @@ def apply(
     *,
     auto_approve: bool = True,
     timeout: int = 1800,
+    env: Mapping[str, str] | None = None,
 ) -> TerraformRun:
     arguments = ["apply", "-input=false", "-no-color", *_var_args(variables)]
     if auto_approve:
         arguments.append("-auto-approve")
-    return run(workdir(directory), arguments, timeout=timeout)
+    return run(workdir(directory), arguments, timeout=timeout, env=env)
 
 
 def destroy(
@@ -136,11 +199,12 @@ def destroy(
     *,
     auto_approve: bool = True,
     timeout: int = 1800,
+    env: Mapping[str, str] | None = None,
 ) -> TerraformRun:
     arguments = ["destroy", "-input=false", "-no-color", *_var_args(variables)]
     if auto_approve:
         arguments.append("-auto-approve")
-    return run(workdir(directory), arguments, timeout=timeout)
+    return run(workdir(directory), arguments, timeout=timeout, env=env)
 
 
 def outputs(directory: str | Path | None = None) -> dict[str, Any]:

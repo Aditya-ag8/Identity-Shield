@@ -24,7 +24,7 @@ import yaml
 
 from identity_shield import config
 
-_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.[A-Za-z0-9_]{1,16})?$")
 
 
 class CatalogueError(ValueError):
@@ -70,6 +70,10 @@ class Technique:
     alternates: tuple[str, ...] = ()
     verify: bool = False
     notes: str = ""
+    executor_ref: str | None = None
+    api_calls: tuple[Mapping[str, Any], ...] = ()
+    custom: bool = False
+    enabled: bool = True
 
     def is_allowed(self, factor: str, level: str) -> bool:
         return level not in self.excluded_levels.get(factor, ())
@@ -169,48 +173,98 @@ def load_factors(path: str | Path | None = None) -> dict[str, Factor]:
     return factors
 
 
-def load_techniques(path: str | Path | None = None) -> tuple[Technique, ...]:
+def _parse_technique_entry(entry: Mapping[str, Any], *, custom: bool = False, enabled: bool = True) -> Technique:
+    technique_id = str(entry.get("technique_id") or "")
+    if not _TECHNIQUE_RE.match(technique_id):
+        raise CatalogueError(f"bad technique_id {technique_id!r}")
+
+    excluded: dict[str, tuple[str, ...]] = {}
+    for factor_name, levels in (entry.get("excluded_levels") or {}).items():
+        excluded[str(factor_name)] = tuple(str(level) for level in levels or ())
+
+    baseline_levels = {
+        str(name): str(level)
+        for name, level in (entry.get("baseline_levels") or {}).items()
+    }
+
+    api_calls = tuple(
+        dict(call)
+        for call in (entry.get("api_calls") or ())
+        if isinstance(call, Mapping)
+    )
+
+    return Technique(
+        technique_id=technique_id,
+        name=str(entry.get("name") or technique_id),
+        tactic=str(entry.get("tactic") or ""),
+        executor=str(entry.get("executor") or "boto3"),
+        event_names=tuple(str(name) for name in entry.get("event_names") or ()),
+        required_actions=tuple(
+            str(action) for action in entry.get("required_actions") or ()
+        ),
+        requires_data_events=bool(entry.get("requires_data_events")),
+        excluded_levels=excluded,
+        baseline_levels=baseline_levels,
+        success_check=dict(entry.get("success_check") or {}),
+        alternates=tuple(str(item) for item in entry.get("alternates") or ()),
+        verify=bool(entry.get("verify")),
+        notes=str(entry.get("notes") or "").strip(),
+        executor_ref=str(entry.get("executor_ref")) if entry.get("executor_ref") else None,
+        api_calls=api_calls,
+        custom=custom,
+        enabled=enabled,
+    )
+
+
+def load_techniques(
+    path: str | Path | None = None,
+    *,
+    include_overrides: bool = True,
+    include_disabled: bool = False,
+) -> tuple[Technique, ...]:
     document = _read_yaml(Path(path) if path else config.TECHNIQUES_YAML)
     raw = document.get("techniques")
     if not isinstance(raw, list) or not raw:
         raise CatalogueError("techniques.yaml: 'techniques' must be a non-empty list")
 
+    disabled: set[str] = set()
+    custom_entries: list[Mapping[str, Any]] = []
+    if path is None and include_overrides:
+        from identity_shield import settings
+
+        overrides = settings.load_attack_overrides()
+        disabled = {str(t).upper() for t in overrides.get("disabled_techniques") or []}
+        custom_entries = list(overrides.get("custom_techniques") or [])
+
     techniques: list[Technique] = []
+    seen_ids: set[str] = set()
     for entry in raw:
         if not isinstance(entry, Mapping):
             raise CatalogueError("each technique must be a mapping")
-        technique_id = str(entry.get("technique_id") or "")
-        if not _TECHNIQUE_RE.match(technique_id):
-            raise CatalogueError(f"bad technique_id {technique_id!r}")
+        tid = str(entry.get("technique_id") or "")
+        is_enabled = tid.upper() not in disabled
+        if not is_enabled and not include_disabled:
+            continue
+        parsed = _parse_technique_entry(entry, custom=False, enabled=is_enabled)
+        techniques.append(parsed)
+        seen_ids.add(parsed.technique_id)
 
-        excluded: dict[str, tuple[str, ...]] = {}
-        for factor_name, levels in (entry.get("excluded_levels") or {}).items():
-            excluded[str(factor_name)] = tuple(str(level) for level in levels or ())
+    for entry in custom_entries:
+        if not isinstance(entry, Mapping):
+            continue
+        tid = str(entry.get("technique_id") or "")
+        is_enabled = tid.upper() not in disabled
+        if not is_enabled and not include_disabled:
+            continue
+        parsed = _parse_technique_entry(entry, custom=True, enabled=is_enabled)
+        if parsed.technique_id in seen_ids:
+            techniques = [t for t in techniques if t.technique_id != parsed.technique_id]
+        techniques.append(parsed)
+        seen_ids.add(parsed.technique_id)
 
-        baseline_levels = {
-            str(name): str(level)
-            for name, level in (entry.get("baseline_levels") or {}).items()
-        }
-
-        techniques.append(
-            Technique(
-                technique_id=technique_id,
-                name=str(entry.get("name") or technique_id),
-                tactic=str(entry.get("tactic") or ""),
-                executor=str(entry.get("executor") or ""),
-                event_names=tuple(str(name) for name in entry.get("event_names") or ()),
-                required_actions=tuple(
-                    str(action) for action in entry.get("required_actions") or ()
-                ),
-                requires_data_events=bool(entry.get("requires_data_events")),
-                excluded_levels=excluded,
-                baseline_levels=baseline_levels,
-                success_check=dict(entry.get("success_check") or {}),
-                alternates=tuple(str(item) for item in entry.get("alternates") or ()),
-                verify=bool(entry.get("verify")),
-                notes=str(entry.get("notes") or "").strip(),
-            )
-        )
+    if not techniques and not include_disabled:
+        # Keep catalogue loadable even if all attacks were toggled off when inspecting overrides
+        return ()
     return tuple(techniques)
 
 
@@ -276,9 +330,16 @@ def validate(catalogue: Catalogue) -> None:
 def load_catalogue(
     factors_path: str | Path | None = None,
     techniques_path: str | Path | None = None,
+    *,
+    include_overrides: bool = True,
+    include_disabled: bool = False,
 ) -> Catalogue:
     factors = load_factors(factors_path)
-    techniques = load_techniques(techniques_path)
+    techniques = load_techniques(
+        techniques_path,
+        include_overrides=include_overrides,
+        include_disabled=include_disabled,
+    )
     document = _read_yaml(Path(techniques_path) if techniques_path else config.TECHNIQUES_YAML)
     catalogue = Catalogue(
         version=int(document.get("version") or 1),

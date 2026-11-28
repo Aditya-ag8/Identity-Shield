@@ -1,0 +1,23 @@
+title: Azure RBAC Role Assignment Created or Updated
+id: d8b2e901-4c3b-4d0f-9e20-2b3c4d5e0001
+status: test
+description: Detects creation or modification of Azure RBAC role assignments via Azure Activity Logs.
+references:
+  - https://attack.mitre.org/techniques/T1098/003/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.privilege-escalation
+  - attack.t1098.003
+logsource:
+  product: azure
+  service: activitylogs
+detection:
+  selection_obj:
+    operationName.value|contains: roleAssignments/write
+  selection_str:
+    eventName|contains: roleAssignments/write
+  condition: selection_obj or selection_str
+falsepositives:
+  - Infrastructure provisioning via Terraform/Bicep
+level: high

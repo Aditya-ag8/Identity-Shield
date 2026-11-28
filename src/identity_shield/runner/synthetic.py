@@ -261,6 +261,27 @@ def fixture_events(technique_id: str, flavour: str = "catch") -> list[dict[str, 
     return [copy.deepcopy(event) for event in extract_events(json.loads(path.read_text("utf-8")))]
 
 
+def _infer_event_source(technique: Technique, event_name: str, index: int) -> str:
+    calls = getattr(technique, "api_calls", ()) or ()
+    if index < len(calls) and calls[index].get("service"):
+        return f"{str(calls[index]['service']).lower()}.amazonaws.com"
+    if calls and calls[0].get("service"):
+        return f"{str(calls[0]['service']).lower()}.amazonaws.com"
+    for action in getattr(technique, "required_actions", ()) or ():
+        if ":" in str(action):
+            return f"{str(action).split(':', 1)[0].lower()}.amazonaws.com"
+    lower = event_name.lower()
+    if any(k in lower for k in ("user", "role", "policy", "accesskey", "loginprofile", "authorization")):
+        return "iam.amazonaws.com"
+    if any(k in lower for k in ("bucket", "object")):
+        return "s3.amazonaws.com"
+    if any(k in lower for k in ("calleridentity", "assumerole")):
+        return "sts.amazonaws.com"
+    if "dbinstance" in lower:
+        return "rds.amazonaws.com"
+    return "ec2.amazonaws.com"
+
+
 def synthetic_events(
     technique: Technique,
     variant: Variant,
@@ -277,9 +298,7 @@ def synthetic_events(
             build_event(
                 technique_id=technique.technique_id,
                 event_name=name,
-                event_source="sts.amazonaws.com"
-                if name == "GetCallerIdentity"
-                else "ec2.amazonaws.com",
+                event_source=_infer_event_source(technique, name, index),
                 run_id=run_id,
                 variant_id=variant.variant_id,
                 index=index,
@@ -319,4 +338,133 @@ def synthetic_events(
         event["requestID"] = digest[32:58].upper()
         event["eventTime"] = event.get("eventTime") or _iso(base + timedelta(seconds=index))
         events.append(event)
+    return events
+
+
+def multicloud_synthetic_events(
+    technique: Technique,
+    variant: Variant,
+    *,
+    cloud_provider: str = "aws",
+    account_scope: str = "",
+    run_id: str,
+    start: str | datetime,
+) -> list[dict[str, Any]]:
+    """Generate 5-factor perturbed synthetic audit events for AWS, GCP, or Azure."""
+    cloud = str(cloud_provider or "aws").strip().lower()
+    if cloud == "aws":
+        return synthetic_events(technique, variant, run_id=run_id, start=start)
+
+    from identity_shield.clouds.factors import user_agent_for_provider
+
+    base = start if isinstance(start, datetime) else parse_start(start)
+    levels = dict(variant.factor_levels)
+    ua = user_agent_for_provider(cloud, levels.get("client_tool", "boto3_default"))
+    net = levels.get("network_origin", "nat_a")
+    if net == "nat_b":
+        source_ip = "198.51.100.20"
+    elif net == "service_mediated":
+        source_ip = "gce.googleapis.com" if cloud == "gcp" else "azure-automation.internal"
+    elif net == "alternate_endpoint":
+        source_ip = "192.0.2.44"
+    else:
+        source_ip = "203.0.113.10"
+    timing_lvl = levels.get("timing", "business_hours")
+    id_lvl = levels.get("identity_context", "iam_user")
+    api_lvl = levels.get("api_form", "canonical")
+    names = tuple(technique.event_names or ("UnknownOp",))
+
+    events: list[dict[str, Any]] = []
+    for index, op_name in enumerate(names):
+        if timing_lvl == "off_hours":
+            moment = base.replace(hour=2, minute=15, second=0, microsecond=0) + timedelta(seconds=index)
+        elif timing_lvl == "spread":
+            moment = base + timedelta(minutes=15 * index)
+        elif timing_lvl == "burst":
+            moment = base.replace(microsecond=0)
+        else:
+            moment = base.replace(hour=10, minute=5, second=0, microsecond=0) + timedelta(seconds=index)
+        ts = _iso(moment)
+        digest = hashlib.sha256(f"{cloud}|{run_id}|{variant.variant_id}|{index}|{op_name}".encode("utf-8")).hexdigest()
+
+        if cloud == "gcp":
+            proj = account_scope or "is-gcp-lab-project"
+            principal = (
+                f"sim-federated@{proj}.iam.gserviceaccount.com"
+                if id_lvl == "federated_session"
+                else (f"gce-vm-sa@{proj}.iam.gserviceaccount.com" if id_lvl == "instance_profile" else f"operator@{proj}.iam.gserviceaccount.com")
+            )
+            svc = f"{str(technique.required_actions[0]).split('.')[0]}.googleapis.com" if technique.required_actions and "." in str(technique.required_actions[0]) else "iam.googleapis.com"
+            if technique.api_calls and technique.api_calls[0].get("service"):
+                raw_svc = str(technique.api_calls[0]["service"]).lower()
+                svc = raw_svc if "." in raw_svc else f"{raw_svc}.googleapis.com"
+            res_name = f"projects/{proj}/resources/{'TempAdmin' if api_lvl == 'hostile_identifier' else 'lab-target'}"
+            evt = {
+                "cloudProvider": "gcp",
+                "accountScope": proj,
+                "insertId": digest[:32],
+                "eventID": digest[:32],
+                "timestamp": ts,
+                "eventTime": ts,
+                "eventSource": svc,
+                "eventName": op_name,
+                "userAgent": ua,
+                "sourceIPAddress": source_ip,
+                "logName": f"projects/{proj}/logs/cloudaudit.googleapis.com%2Factivity",
+                "protoPayload": {
+                    "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+                    "serviceName": svc,
+                    "methodName": op_name,
+                    "resourceName": res_name,
+                    "authenticationInfo": {
+                        "principalEmail": principal,
+                        "serviceAccountKeyName": f"projects/{proj}/serviceAccounts/{principal}/keys/k1" if id_lvl == "iam_user" else None,
+                        "serviceAccountDelegationInfo": [{"firstPartyPrincipal": {"principalEmail": f"service-{proj}@gcp-sa.iam.gserviceaccount.com"}}] if net == "service_mediated" else [],
+                    },
+                    "requestMetadata": {
+                        "callerIp": source_ip,
+                        "callerSuppliedUserAgent": ua,
+                    },
+                    "request": {"maxResults": 1000} if api_lvl in {"extra_parameters", "batched"} else {},
+                },
+                "resource": {"type": "audited_resource", "labels": {"project_id": proj, "location": "global"}},
+                "synthetic": True,
+            }
+            events.append(evt)
+        else:
+            # Azure Activity / Entra synthetic payload
+            sub_id = account_scope or "00000000-0000-0000-0000-000000000001"
+            caller = (
+                "TempAdmin@contoso.onmicrosoft.com"
+                if api_lvl == "hostile_identifier"
+                else ("msi-vm-identity" if id_lvl == "instance_profile" else "operator@contoso.onmicrosoft.com")
+            )
+            svc = "Microsoft.Authorization"
+            if technique.api_calls and technique.api_calls[0].get("service"):
+                svc = str(technique.api_calls[0]["service"])
+            evt = {
+                "cloudProvider": "azure",
+                "accountScope": sub_id,
+                "eventDataId": digest[:32],
+                "eventID": digest[:32],
+                "time": ts,
+                "eventTimestamp": ts,
+                "eventTime": ts,
+                "eventSource": svc,
+                "eventName": op_name,
+                "userAgent": ua,
+                "sourceIPAddress": source_ip,
+                "subscriptionId": sub_id,
+                "operationName": {"value": op_name, "localizedValue": op_name},
+                "activityDisplayName": op_name,
+                "conditionalAccessStatus": "notApplied" if op_name == "UserSignIn" else None,
+                "caller": caller,
+                "callerIpAddress": source_ip,
+                "resourceId": f"/subscriptions/{sub_id}/resourceGroups/rg-lab/providers/{svc}/targets/lab",
+                "category": {"value": "SignInLogs" if op_name == "UserSignIn" else "Administrative"},
+                "identity": {"delegatedFrom": "AzureResourceManager"} if net == "service_mediated" else {},
+                "properties": {"userAgent": ua},
+                "synthetic": True,
+            }
+            events.append(evt)
     return events

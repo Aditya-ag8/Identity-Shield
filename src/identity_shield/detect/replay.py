@@ -46,9 +46,32 @@ class RulesetLoad:
 
 
 def load_ruleset_config(path: Path | None = None) -> dict[str, Any]:
-    path = path or config.RULESETS_YAML
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return document.get("rulesets") or {}
+    source_path = path or config.RULESETS_YAML
+    document = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
+    rulesets = dict(document.get("rulesets") or {})
+    if path is None:
+        dynamic_dirs = (
+            ("custom-v1", config.DATA / "rules" / "custom", "Client-authored custom Sigma detection rules.", "custom"),
+            ("enhanced-v1", config.DATA / "rules" / "enhanced", "Auto-enhanced generalized Sigma rules from Rule Enhancer.", "enhanced"),
+        )
+        for rs_name, rule_dir, desc, source_kind in dynamic_dirs:
+            if rule_dir.exists() and any(
+                p.suffix.lower() in SIGMA_SUFFIXES and p.is_file() for p in rule_dir.iterdir()
+            ):
+                try:
+                    sigma_dir_ref = str(rule_dir.relative_to(config.ROOT))
+                except ValueError:
+                    sigma_dir_ref = str(rule_dir)
+                rulesets.setdefault(
+                    rs_name,
+                    {
+                        "description": desc,
+                        "sigma_dirs": [sigma_dir_ref],
+                        "include_python_rules": False,
+                        "source": source_kind,
+                    },
+                )
+    return rulesets
 
 
 def _bump(statuses: dict[str, int], status: str) -> None:
@@ -165,7 +188,8 @@ def load_ruleset(
             result.warnings.append(f"pySigma backend unavailable: {exc}")
 
     for relative in entry.get("sigma_dirs") or []:
-        directory = config.ROOT / relative
+        candidate = Path(relative)
+        directory = candidate if candidate.is_absolute() else (config.ROOT / candidate)
         if not directory.exists():
             result.warnings.append(f"sigma dir missing: {relative}")
             continue
@@ -205,7 +229,7 @@ def load_ruleset(
                         (
                             f"{version}:{path.stem}",
                             version,
-                            str(path.relative_to(config.ROOT)),
+                            str(path.relative_to(config.ROOT)) if path.is_relative_to(config.ROOT) else str(path),
                             path.stem,
                             status,
                             reason,
@@ -338,16 +362,19 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
             generic.append(rule)
 
     pending: list[tuple[Any, ...]] = []
-    cursor = conn.execute("SELECT event_id, fixture_key, trial_id, raw FROM event")
+    cursor = conn.execute("SELECT event_id, fixture_key, trial_id, cloud_provider, raw FROM event")
     for row in cursor:
         events += 1
         try:
             event = json.loads(row["raw"])
         except json.JSONDecodeError:
             continue
+        event_cloud = str(row["cloud_provider"] or event.get("cloudProvider") or "aws").lower()
         name = str(event.get("eventName") or "").casefold()
         candidates = generic + indexed.get(name, [])
         for rule in candidates:
+            if not rule.matches_cloud(event_cloud):
+                continue
             rule_id = rule_ids.get(rule.native_id) or f"{prefix}{rule.native_id}"
             try:
                 fired = rule.matches(event)
@@ -362,6 +389,7 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
                     row["event_id"],
                     row["trial_id"],
                     row["fixture_key"],
+                    event_cloud,
                     now,
                     None,
                     json.dumps(list(rule.fields)) if rule.fields else None,
@@ -372,9 +400,9 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO alert (alert_id, rule_id, event_id, trial_id,
-                                             fixture_key, evaluated_at, latency_ms,
+                                             fixture_key, cloud_provider, evaluated_at, latency_ms,
                                              matched_fields)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 pending,
             )
@@ -384,9 +412,9 @@ def run_replay(conn, loaded: RulesetLoad, *, clear: bool = True) -> dict[str, in
         conn.executemany(
             """
             INSERT OR IGNORE INTO alert (alert_id, rule_id, event_id, trial_id,
-                                         fixture_key, evaluated_at, latency_ms,
+                                         fixture_key, cloud_provider, evaluated_at, latency_ms,
                                          matched_fields)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             pending,
         )

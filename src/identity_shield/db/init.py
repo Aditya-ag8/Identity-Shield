@@ -11,11 +11,11 @@ from pathlib import Path
 
 from identity_shield import config
 from identity_shield.db.connection import connect, connect_path
+from identity_shield.db.migrations import apply_migrations
 
 
 def init_db(path: str | Path | None = None, drop: bool = False) -> Path:
     resolved = connect_path(path)
-    schema = config.SCHEMA_SQL.read_text(encoding="utf-8")
 
     if drop and resolved.exists():
         conn = connect(resolved)
@@ -28,35 +28,15 @@ def init_db(path: str | Path | None = None, drop: bool = False) -> Path:
 
     conn = connect(resolved)
     try:
-        # Additive migrations for databases created before the column existed.
-        # The schema file itself cannot do this because CREATE TABLE IF NOT
-        # EXISTS leaves an old table untouched, and the trial view references
-        # the column.
-        tables = {
-            row["name"]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        if "lab_run" in tables:
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(lab_run)")}
-            if "synthetic" not in columns:
-                conn.execute(
-                    "ALTER TABLE lab_run ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0"
-                )
-        if "ruleset" in tables:
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(ruleset)")}
-            if "manifest_sha256" not in columns:
-                conn.execute(
-                    "ALTER TABLE ruleset ADD COLUMN manifest_sha256 TEXT"
-                )
-            if "git_sha" not in columns:
-                conn.execute(
-                    "ALTER TABLE ruleset ADD COLUMN git_sha TEXT"
-                )
-        conn.executescript(schema)
-        conn.commit()
+        apply_migrations(conn)
     finally:
         conn.close()
     return resolved
+
+
+def ensure_tables(conn) -> None:
+    """Idempotently apply any newly added schema tables and migrations onto an open connection."""
+    apply_migrations(conn)
 
 
 def main(argv: list[str] | None = None) -> int:

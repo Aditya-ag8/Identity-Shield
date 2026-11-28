@@ -128,6 +128,42 @@ def _bench(argv: list[str]) -> int:
     return main(argv)
 
 
+def _attacks(argv: list[str]) -> int:
+    from identity_shield.ops_cli import attacks_main
+
+    return attacks_main(argv)
+
+
+def _config(argv: list[str]) -> int:
+    from identity_shield.ops_cli import config_main
+
+    return config_main(argv)
+
+
+def _logs(argv: list[str]) -> int:
+    from identity_shield.ops_cli import logs_main
+
+    return logs_main(argv)
+
+
+def _ui(argv: list[str]) -> int:
+    from identity_shield.ops_cli import ui_main
+
+    return ui_main(argv)
+
+
+def _proxy(argv: list[str]) -> int:
+    from identity_shield.ops_cli import proxy_main
+
+    return proxy_main(argv)
+
+
+def _dynamic(argv: list[str]) -> int:
+    from identity_shield.ops_cli import dynamic_main
+
+    return dynamic_main(argv)
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "init": _init,
     "load": _load,
@@ -139,6 +175,12 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "runner": _runner,
     "analyse": _analyse,
     "bench": _bench,
+    "attacks": _attacks,
+    "config": _config,
+    "logs": _logs,
+    "proxy": _proxy,
+    "dynamic": _dynamic,
+    "ui": _ui,
 }
 
 

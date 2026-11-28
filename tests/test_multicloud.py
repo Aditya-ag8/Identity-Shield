@@ -1,0 +1,906 @@
+"""Comprehensive tests for Multi-Cloud Identity Shield (AWS, GCP, Azure, SIEM Export & Security)."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from identity_shield import cli, config, ops_cli, settings
+from identity_shield.clouds import (
+    CANONICAL_SCHEMA_VERSION,
+    CanonicalEvent,
+    classify_traffic,
+    detect_and_normalize_audit_payload,
+    list_provider_capabilities,
+)
+from identity_shield.clouds.factors import check_factor_support
+from identity_shield.db.connection import connect
+from identity_shield.db.init import ensure_tables, init_db
+from identity_shield.detect import dynamic, pysigma_backend, replay as detect_replay
+from identity_shield.detect.policy import evaluate_policy
+from identity_shield.detect.rules import Rule, load_sigma_text
+from identity_shield.detect.siem_export import SIEM_TARGETS, export_rule_to_siem, export_sigma_yaml_to_siem
+from identity_shield.integrations import get_external_tools_status, parse_scoutsuite_inventory
+from identity_shield.proxy import parser as proxy_parser
+from identity_shield.proxy.server import PROXY_RUNTIME
+from identity_shield.proxy.tls import TlsCertAuthority
+from identity_shield.runner.synthetic import multicloud_synthetic_events
+from identity_shield.variants.closed_loop import preview_closed_loop_vectors, run_closed_loop
+from identity_shield.variants.generator import GenerationOptions, generate_for_technique
+from identity_shield.variants.loader import Technique, load_catalogue
+from identity_shield.web import app as web_app
+from tests.test_security_hardening import _raw_asgi
+
+
+@pytest.fixture
+def mc_env(tmp_path, monkeypatch):
+    db_path = tmp_path / "mc_test.db"
+    cfg_path = tmp_path / "workspace_config.json"
+    overrides_path = tmp_path / "attack_overrides.json"
+    init_db(db_path, drop=True)
+    monkeypatch.setenv("IDENTITY_SHIELD_DB", str(db_path))
+    monkeypatch.setenv("IDENTITY_SHIELD_CONFIG", str(cfg_path))
+    monkeypatch.setenv("IDENTITY_SHIELD_ATTACK_OVERRIDES", str(overrides_path))
+    monkeypatch.setattr(config, "DEFAULT_DB", db_path)
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    monkeypatch.setattr(web_app, "NON_LOCAL_BIND", False)
+    monkeypatch.delenv("IDENTITY_SHIELD_REQUIRE_TOKEN", raising=False)
+    PROXY_RUNTIME.stop()
+    try:
+        yield {"db": db_path, "tmp": tmp_path, "cfg": cfg_path}
+    finally:
+        PROXY_RUNTIME.stop()
+
+
+def test_cloud_traffic_classifier_and_conflicts():
+    # AWS SigV4 + endpoint
+    r_aws = classify_traffic(
+        method="POST",
+        url_or_path="/",
+        headers={
+            "Host": "iam.amazonaws.com",
+            "Authorization": "AWS4-HMAC-SHA256 Credential=AKIA1234567890ABCDEF/20261127/eu-west-1/iam/aws4_request",
+        },
+        body=b"Action=ListUsers&Version=2010-05-08",
+    )
+    assert r_aws.cloud_provider == "aws"
+    assert r_aws.traffic_type == "cloud_api"
+    assert r_aws.legacy_traffic_kind == "aws_api"
+    assert r_aws.confidence == "high"
+    # Never expose raw access keys in classification text
+    assert "AKIA1234567890ABCDEF" not in r_aws.reason
+
+    # GCP REST + headers (no auth token required)
+    r_gcp = classify_traffic(
+        method="POST",
+        url_or_path="/v1/projects/prod-101/serviceAccounts/svc@prod-101.iam.gserviceaccount.com/keys",
+        headers={"Host": "iam.googleapis.com", "X-Goog-User-Project": "prod-101"},
+    )
+    assert r_gcp.cloud_provider == "gcp"
+    assert r_gcp.traffic_type == "cloud_api"
+    assert r_gcp.legacy_traffic_kind == "gcp_api"
+    assert r_gcp.detected_service == "iam"
+
+    # Azure ARM path + KeyVault
+    r_az = classify_traffic(
+        method="PUT",
+        url_or_path="/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Authorization/roleAssignments/ra1?api-version=2022-04-01",
+        headers={"Host": "management.azure.com", "X-Ms-Client-Request-Id": "123"},
+    )
+    assert r_az.cloud_provider == "azure"
+    assert r_az.traffic_type == "cloud_api"
+    assert r_az.legacy_traffic_kind == "azure_api"
+
+    # Conflicting multi-cloud headers on unknown custom host -> stays conservative unknown
+    r_conflict = classify_traffic(
+        method="GET",
+        url_or_path="/custom/api",
+        headers={"Host": "custom-proxy.internal", "X-Amz-Date": "20261127T000000Z", "X-Goog-User-Project": "proj-1"},
+    )
+    assert r_conflict.cloud_provider == "unknown"
+    assert r_conflict.confidence == "low"
+    assert set(r_conflict.conflicting_providers) == {"aws", "gcp"}
+
+    # Generic web app vs CONNECT tunnel separation
+    r_web = classify_traffic(method="GET", url_or_path="/.env", headers={"Host": "portal.corp.local"})
+    assert r_web.cloud_provider == "unknown"
+    assert r_web.traffic_type == "http_app"
+
+    r_tun = classify_traffic(
+        method="CONNECT",
+        url_or_path="storage.googleapis.com:443",
+        headers={"Host": "storage.googleapis.com:443"},
+        is_connect=True,
+    )
+    assert r_tun.cloud_provider == "gcp"
+    assert r_tun.traffic_type == "connect_tunnel"
+    assert r_tun.legacy_traffic_kind == "connect_tunnel"
+
+
+def test_multicloud_normalization_and_redaction():
+    aws_raw = {
+        "eventVersion": "1.09",
+        "eventID": "aws-ev-1",
+        "eventTime": "2026-11-27T05:00:00Z",
+        "eventSource": "iam.amazonaws.com",
+        "eventName": "CreateAccessKey",
+        "awsRegion": "eu-west-1",
+        "sourceIPAddress": "203.0.113.10",
+        "userAgent": "aws-cli/2.15.30",
+        "recipientAccountId": "111122223333",
+        "userIdentity": {"type": "IAMUser", "arn": "arn:aws:iam::111122223333:user/alice"},
+        "requestParameters": {"access_key": "AKIA1234567890ABCDEF"},
+    }
+    gcp_admin_raw = {
+        "insertId": "gcp-ev-1",
+        "logName": "projects/my-gcp-proj/logs/cloudaudit.googleapis.com%2Factivity",
+        "timestamp": "2026-11-27T05:01:00Z",
+        "protoPayload": {
+            "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+            "serviceName": "iam.googleapis.com",
+            "methodName": "google.iam.admin.v1.CreateServiceAccountKey",
+            "resourceName": "projects/my-gcp-proj/serviceAccounts/ops@my-gcp-proj.iam.gserviceaccount.com",
+            "authenticationInfo": {
+                "principalEmail": "ops@my-gcp-proj.iam.gserviceaccount.com",
+                "token": "ya29.super_secret_oauth_token_1234567",
+            },
+            "requestMetadata": {"callerIp": "198.51.100.4", "callerSuppliedUserAgent": "gcloud/490.0.0"},
+        },
+        "resource": {"type": "service_account", "labels": {"project_id": "my-gcp-proj", "location": "global"}},
+    }
+    gcp_policy_denied = {
+        "insertId": "gcp-ev-2",
+        "logName": "projects/my-gcp-proj/logs/cloudaudit.googleapis.com%2Fpolicy",
+        "timestamp": "2026-11-27T05:01:30Z",
+        "protoPayload": {
+            "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+            "serviceName": "secretmanager.googleapis.com",
+            "methodName": "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion",
+            "status": {"code": 7, "message": "PERMISSION_DENIED"},
+            "authorizationInfo": [{"permission": "secretmanager.versions.access", "granted": False}],
+        },
+    }
+    azure_activity = {
+        "eventDataId": "az-act-1",
+        "time": "2026-11-27T05:02:00Z",
+        "operationName": {"value": "Microsoft.Authorization/roleAssignments/write"},
+        "caller": "deployer@contoso.com",
+        "callerIpAddress": "192.0.2.88",
+        "resourceId": "/subscriptions/sub-abc/resourceGroups/rg-prod/providers/Microsoft.Authorization/roleAssignments/ra-1",
+        "tenantId": "tenant-123",
+        "category": {"value": "Administrative"},
+        "status": {"value": "Succeeded"},
+    }
+    entra_signin = {
+        "id": "az-si-1",
+        "createdDateTime": "2026-11-27T05:03:00Z",
+        "userPrincipalName": "alice@contoso.com",
+        "ipAddress": "192.0.2.90",
+        "clientAppUsed": "Browser",
+        "conditionalAccessStatus": "notApplied",
+        "status": {"errorCode": 50126, "failureReason": "Invalid username or password"},
+        "location": {"countryOrRegion": "US"},
+        "tenantId": "tenant-123",
+    }
+    entra_audit = {
+        "id": "az-au-1",
+        "activityDateTime": "2026-11-27T05:04:00Z",
+        "activityDisplayName": "Add service principal credentials",
+        "category": "ApplicationManagement",
+        "result": "success",
+        "initiatedBy": {"user": {"userPrincipalName": "admin@contoso.com", "ipAddress": "198.51.100.77"}},
+        "targetResources": [{"id": "spn-99", "displayName": "billing-spn"}],
+        "tenantId": "tenant-123",
+    }
+
+    c_aws = detect_and_normalize_audit_payload(aws_raw)[0]
+    assert c_aws.schema_version == CANONICAL_SCHEMA_VERSION
+    assert c_aws.cloud_provider == "aws"
+    assert c_aws.account_scope == "111122223333"
+    assert "AKIA1234567890ABCDEF" not in json.dumps(c_aws.to_dict())
+
+    gcp_events = detect_and_normalize_audit_payload({"entries": [gcp_admin_raw, gcp_policy_denied]})
+    assert len(gcp_events) == 2
+    assert gcp_events[0].source_type == "gcp_admin_activity"
+    assert gcp_events[0].account_scope == "my-gcp-proj"
+    assert "ya29.super_secret" not in json.dumps(gcp_events[0].to_dict())
+    assert gcp_events[1].source_type == "gcp_policy_denied"
+    assert gcp_events[1].outcome == "denied"
+
+    az_events = detect_and_normalize_audit_payload({"value": [azure_activity, entra_signin, entra_audit]})
+    assert [e.source_type for e in az_events] == ["azure_activity", "entra_signin", "entra_audit"]
+    assert az_events[0].account_scope == "sub-abc"
+    assert az_events[1].outcome == "error"
+    assert az_events[2].resource == "billing-spn"
+
+
+def test_database_legacy_migration_is_idempotent_and_preserves_data(tmp_path):
+    legacy_db = tmp_path / "legacy_v0.db"
+    raw_conn = sqlite3.connect(legacy_db)
+    raw_conn.executescript(
+        """
+        CREATE TABLE lab_run (
+          run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT,
+          aws_account_id TEXT NOT NULL, region TEXT NOT NULL, git_sha TEXT,
+          ruleset_version TEXT NOT NULL, collector_lag_ms INTEGER, notes TEXT
+        );
+        CREATE TABLE technique (
+          technique_id TEXT PRIMARY KEY, name TEXT NOT NULL, tactic TEXT NOT NULL,
+          executor TEXT NOT NULL, executor_ref TEXT, event_names TEXT NOT NULL,
+          requires_data_events INTEGER NOT NULL DEFAULT 0, success_check TEXT NOT NULL,
+          required_actions TEXT NOT NULL
+        );
+        CREATE TABLE variant (
+          variant_id TEXT PRIMARY KEY, technique_id TEXT NOT NULL, variant_set TEXT NOT NULL,
+          factor_levels TEXT NOT NULL, seed INTEGER NOT NULL, spec_sha256 TEXT NOT NULL, notes TEXT
+        );
+        CREATE TABLE trial (
+          trial_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, variant_id TEXT NOT NULL,
+          repetition INTEGER NOT NULL, window_start TEXT NOT NULL, window_end TEXT,
+          attack_succeeded INTEGER, attack_evidence TEXT, variant_changed INTEGER,
+          variant_diff TEXT, error TEXT
+        );
+        CREATE TABLE fixture (
+          fixture_key TEXT PRIMARY KEY, technique_id TEXT, flavour TEXT NOT NULL,
+          path TEXT NOT NULL, expected_detected INTEGER
+        );
+        CREATE TABLE event (
+          event_id TEXT PRIMARY KEY, trial_id TEXT, fixture_key TEXT,
+          event_time TEXT NOT NULL, received_at TEXT NOT NULL, event_source TEXT,
+          event_name TEXT, aws_region TEXT, source_ip TEXT, user_agent TEXT,
+          user_identity_type TEXT, user_identity_arn TEXT, error_code TEXT, raw TEXT NOT NULL
+        );
+        CREATE TABLE ruleset (
+          ruleset_version TEXT PRIMARY KEY, created_at TEXT NOT NULL, frozen_at TEXT,
+          description TEXT, source TEXT
+        );
+        CREATE TABLE principal_profile (
+          principal TEXT PRIMARY KEY, known_user_agents TEXT NOT NULL DEFAULT '[]',
+          known_regions TEXT NOT NULL DEFAULT '[]', known_services TEXT NOT NULL DEFAULT '[]',
+          known_operations TEXT NOT NULL DEFAULT '[]', known_hours TEXT NOT NULL DEFAULT '[]',
+          request_count INTEGER NOT NULL DEFAULT 0, last_seen TEXT NOT NULL
+        );
+        INSERT INTO principal_profile VALUES ('alice', '["boto3"]', '["eu-west-1"]', '["s3"]', '["GetObject"]', '[10]', 5, '2026-11-26T00:00:00Z');
+        INSERT INTO event VALUES ('legacy-ev-1', NULL, NULL, '2026-11-26T00:00:00Z', '2026-11-26T00:00:01Z', 's3.amazonaws.com', 'GetObject', 'eu-west-1', '1.2.3.4', 'boto3', 'IAMUser', 'arn:aws:iam::1:user/alice', NULL, '{}');
+        """
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    # Apply additive migrations twice (idempotent)
+    init_db(legacy_db)
+    init_db(legacy_db)
+
+    conn = connect(legacy_db)
+    try:
+        ev = conn.execute("SELECT cloud_provider, event_name FROM event WHERE event_id = 'legacy-ev-1'").fetchone()
+        assert ev["cloud_provider"] == "aws"
+        assert ev["event_name"] == "GetObject"
+
+        prof = conn.execute("SELECT profile_key, principal, request_count, cold_start_complete FROM principal_profile WHERE principal = 'alice'").fetchone()
+        assert prof["profile_key"] == "aws::alice"
+        assert prof["request_count"] == 5
+        assert prof["cold_start_complete"] == 1
+
+        # Cross-cloud identical principal names stay isolated without collision
+        dynamic.update_principal_profile(
+            conn,
+            {"cloud_provider": "gcp", "account_scope": "proj-x", "principal": "alice", "service": "iam.googleapis.com", "operation": "ListRoles"},
+        )
+        dynamic.update_principal_profile(
+            conn,
+            {"cloud_provider": "azure", "account_scope": "tenant-y", "principal": "alice", "service": "Microsoft.EntraID", "operation": "UserSignIn"},
+        )
+        conn.commit()
+        rows = conn.execute("SELECT profile_key, cloud_provider FROM principal_profile WHERE principal = 'alice' ORDER BY cloud_provider").fetchall()
+        assert [(r["profile_key"], r["cloud_provider"]) for r in rows] == [
+            ("aws::alice", "aws"),
+            ("azure:tenant-y:alice", "azure"),
+            ("gcp:proj-x:alice", "gcp"),
+        ]
+        versions = [r[0] for r in conn.execute("SELECT version FROM schema_migration ORDER BY version").fetchall()]
+        assert versions == [1, 2, 3]
+    finally:
+        conn.close()
+
+
+def test_multicloud_sigma_behavioral_isolation_and_policy(mc_env):
+    # All starter GCP and Azure Sigma rules compile via pySigma when available and match reference parser
+    for cloud_dir in (config.CONF / "rules" / "gcp", config.CONF / "rules" / "azure"):
+        files = sorted(p for p in cloud_dir.iterdir() if p.suffix == ".yml")
+        assert len(files) == 5
+        if pysigma_backend.PYSIGMA_AVAILABLE:
+            rep = pysigma_backend.compile_corpus(cloud_dir)
+            assert rep.compile_rate == 1.0
+
+    # Policy layer keeps gcp/azure observe-only by default even when global mode='block'
+    pol_gcp = evaluate_policy(
+        cloud_provider="gcp",
+        traffic_type="cloud_api",
+        proxy_mode="block",
+        block_threshold=70.0,
+        matched_static=[{"rule_id": "gcp-1", "level": "high"}],
+        matched_dynamic=[],
+    )
+    assert pol_gcp.effective_mode == "observe"
+    assert pol_gcp.action_taken == "alerted"
+
+    pol_gcp_block = evaluate_policy(
+        cloud_provider="gcp",
+        traffic_type="cloud_api",
+        proxy_mode="block",
+        block_threshold=70.0,
+        matched_static=[{"rule_id": "gcp-1", "level": "high"}],
+        matched_dynamic=[],
+        provider_policies={"gcp": "block"},
+    )
+    assert pol_gcp_block.action_taken == "blocked"
+
+    # Single low finding never auto-blocks below threshold
+    pol_low = evaluate_policy(
+        cloud_provider="aws",
+        traffic_type="cloud_api",
+        proxy_mode="block",
+        block_threshold=70.0,
+        matched_static=[{"rule_id": "aws-low", "level": "low"}],
+        matched_dynamic=[],
+    )
+    assert pol_low.action_taken == "alerted"
+
+    # CONNECT tunnel without TLS reports observed metadata-only
+    pol_conn = evaluate_policy(
+        cloud_provider="azure",
+        traffic_type="connect_tunnel",
+        proxy_mode="block",
+        block_threshold=70.0,
+        matched_static=[],
+        matched_dynamic=[],
+        inspection_capable=False,
+    )
+    assert pol_conn.policy_decision == "observed"
+
+    # Synthetic poisoning guard + cold-start safety
+    conn = connect(mc_env["db"])
+    try:
+        res_syn = dynamic.evaluate_live_event(
+            conn,
+            {
+                "cloud_provider": "gcp",
+                "account_scope": "proj-syn",
+                "principal": "syn-actor",
+                "service": "storage.googleapis.com",
+                "operation": "storage.buckets.get",
+                "user_agent": "curl/8.4.0",
+                "aws_region": "global",
+                "is_synthetic": True,
+                "event_obj": {"cloudProvider": "gcp", "synthetic": True, "eventName": "storage.buckets.get"},
+            },
+            learn_baseline=True,
+        )
+        assert res_syn["cold_start"] is True
+        assert conn.execute("SELECT COUNT(*) FROM principal_profile WHERE principal = 'syn-actor'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_multicloud_variants_closed_loop_and_siem_export(mc_env):
+    # Unsupported provider factor combos are honestly detected
+    ok_aws, unsup_aws = check_factor_support("aws", {"network_origin": "alternate_endpoint"})
+    assert ok_aws and not unsup_aws
+    ok_gcp, unsup_gcp = check_factor_support("gcp", {"network_origin": "alternate_endpoint"})
+    assert not ok_gcp and unsup_gcp
+
+    # Synthetic multi-cloud generation
+    cat = load_catalogue()
+    gcp_tech = Technique(
+        technique_id="T1530.GCP01",
+        name="GCP Storage Read",
+        tactic="collection",
+        executor="synthetic",
+        executor_ref=None,
+        event_names=("storage.objects.get",),
+        required_actions=("storage.objects.get",),
+        requires_data_events=True,
+        excluded_levels={},
+        baseline_levels={},
+        success_check={},
+    )
+    variants, _ = generate_for_technique(gcp_tech, cat, GenerationOptions(holdout_per_technique=2, include_pairwise=False))
+    events = multicloud_synthetic_events(gcp_tech, variants[0], cloud_provider="gcp", account_scope="proj-sec", run_id="r1", start="2026-11-27T05:00:00Z")
+    assert events[0]["protoPayload"]["methodName"] == "storage.objects.get"
+    assert events[0]["synthetic"] is True
+
+    # SIEM export across all 4 targets
+    gcp_rule = load_sigma_text((config.CONF / "rules" / "gcp" / "gcp-T1098.001-sa-key-create.yml").read_text(encoding="utf-8"))
+    out_gcp = export_rule_to_siem(gcp_rule, "gcp_logging")
+    assert out_gcp["supported"] and out_gcp["valid"]
+    assert "CreateServiceAccountKey" in out_gcp["query"]
+
+    out_secops = export_rule_to_siem(gcp_rule, "gcp_secops")
+    assert out_secops["supported"] and "rule " in out_secops["query"]
+
+    az_rule = load_sigma_text((config.CONF / "rules" / "azure" / "azure-T1098.003-role-assignment-write.yml").read_text(encoding="utf-8"))
+    out_kql = export_rule_to_siem(az_rule, "azure_sentinel")
+    assert out_kql["supported"] and "AzureActivity" in out_kql["query"] and "| where " in out_kql["query"]
+
+    aws_rule = load_sigma_text((config.CONF / "rules" / "baseline" / "T1098.001-create-access-key.yml").read_text(encoding="utf-8"))
+    out_cw = export_rule_to_siem(aws_rule, "aws_cloudwatch")
+    assert out_cw["supported"] and "| filter " in out_cw["query"]
+
+    # Cross-cloud mismatch warning + unsupported threshold count reporting
+    mismatch = export_rule_to_siem(aws_rule, "azure_sentinel")
+    assert mismatch["warnings"]
+
+    unsup_yaml = """
+title: Two of Them Unsupported
+id: deadbeef-0000-0000-0000-000000000001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  s1:
+    eventName: ListUsers
+  s2:
+    eventName: ListRoles
+  s3:
+    eventName: GetObject
+  condition: 2 of s*
+"""
+    unsup_out = export_sigma_yaml_to_siem(unsup_yaml, "aws_cloudwatch")
+    assert unsup_out["supported"] is False
+    assert unsup_out["unsupported_conditions"]
+
+
+def test_tls_ca_guard_and_multicloud_api_and_cli_parity(mc_env):
+    # TLS inspector handles missing openssl cleanly and never leaks private keys
+    tls = TlsCertAuthority(ca_dir=mc_env["tmp"] / "ca", which_fn=lambda _b: None)
+    assert tls.ensure_ca()["ready"] is False
+    assert tls.is_passthrough_host("login.microsoftonline.com") is True
+    st = tls.status(enabled=False)
+    assert st["ca_private_key_in_db"] is False
+    with pytest.raises(ValueError, match="Unsafe"):
+        tls.issue_host_cert("bad host;rm")
+
+    # Lazy tool status includes gcloud, az, scout without failing when missing
+    tools = get_external_tools_status(which_fn=lambda _b: None)
+    tool_ids = {t["id"] for t in tools["tools"]}
+    assert {"stratus", "cloudfox", "pacu", "gcloud", "az", "scout"}.issubset(tool_ids)
+
+    tok = web_app.get_session_token()
+    auth = [(b"authorization", f"Bearer {tok}".encode("utf-8"))]
+
+    # Provider capability & ingest endpoints
+    r_clouds = _raw_asgi("GET", "/api/clouds", headers=auth)
+    assert r_clouds.status_code == 200
+    assert {p["provider"] for p in r_clouds.json()["providers"]} == {"aws", "gcp", "azure"}
+
+    r_ing = _raw_asgi(
+        "POST",
+        "/api/clouds/ingest",
+        payload={
+            "cloud_provider": "gcp",
+            "events": [
+                {
+                    "insertId": "gcp-ing-1",
+                    "logName": "projects/p-sec/logs/cloudaudit.googleapis.com%2Factivity",
+                    "timestamp": "2026-11-27T06:00:00Z",
+                    "protoPayload": {
+                        "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+                        "serviceName": "iam.googleapis.com",
+                        "methodName": "google.iam.admin.v1.CreateServiceAccountKey",
+                        "status": {"code": 7},
+                    },
+                    "resource": {"labels": {"project_id": "p-sec"}},
+                }
+            ],
+        },
+        headers=auth,
+    )
+    assert r_ing.status_code == 200
+    assert r_ing.json()["by_cloud"]["gcp"] == 1
+
+    # Import ScoutSuite multi-cloud inventory
+    r_sc = _raw_asgi(
+        "POST",
+        "/api/tools/scoutsuite/import",
+        payload={
+            "inventory": {
+                "provider_code": "gcp",
+                "project_id": "p-sec",
+                "buckets": ["p-sec-sensitive-gcs"],
+                "secrets": ["prod-api-token"],
+            }
+        },
+        headers=auth,
+    )
+    assert r_sc.status_code == 200
+    assert r_sc.json()["inventory"]["cloud_provider"] == "gcp"
+
+    # Run closed-loop scoped to GCP only
+    r_cl = _raw_asgi(
+        "POST",
+        "/api/closed-loop/run",
+        payload={"mode": "from_resources", "cloud_provider": "gcp", "auto_enhance": True},
+        headers=auth,
+    )
+    assert r_cl.status_code == 200
+    assert r_cl.json()["summary"]["gcp_variants_tested"] > 0
+
+    # Filtered logs endpoint + SIEM export endpoint
+    r_logs = _raw_asgi("GET", "/api/logs?cloud_provider=gcp", headers=auth)
+    assert r_logs.status_code == 200
+    assert all(e["cloud_provider"] == "gcp" for e in r_logs.json()["events"])
+
+    r_siem = _raw_asgi(
+        "POST",
+        "/api/siem/export",
+        payload={"yaml_content": (config.CONF / "rules" / "azure" / "azure-T1555.006-keyvault-secret-access.yml").read_text(encoding="utf-8"), "target": "azure_sentinel"},
+        headers=auth,
+    )
+    assert r_siem.status_code == 200
+    assert "SecretGet" in r_siem.json()["query"]
+
+    # Live multi-cloud simulator via proxy + filtering
+    r_sim = _raw_asgi("POST", "/api/proxy/simulate", payload={"scenario": "multicloud_mixed"}, headers=auth)
+    assert r_sim.status_code == 200
+    PROXY_RUNTIME.stop()
+
+    r_px_az = _raw_asgi("GET", "/api/proxy/events?cloud_provider=azure", headers=auth)
+    assert r_px_az.status_code == 200
+    assert r_px_az.json()["count"] >= 2
+
+    # CLI parity checks
+    az_log_file = mc_env["tmp"] / "az_audit.json"
+    az_log_file.write_text(
+        json.dumps(
+            {
+                "value": [
+                    {
+                        "eventDataId": "az-cli-1",
+                        "time": "2026-11-27T06:05:00Z",
+                        "operationName": {"value": "Microsoft.Authorization/roleAssignments/write"},
+                        "resourceId": "/subscriptions/sub-cli/providers/Microsoft.Authorization/roleAssignments/r1",
+                        "caller": "cli@contoso.com",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cli.main(["logs", "ingest", "--file", str(az_log_file), "--cloud", "azure", "--db", str(mc_env["db"])]) == 0
+    assert cli.main(["dynamic", "loop", "--mode", "from_resources", "--cloud", "gcp", "--preview", "--db", str(mc_env["db"])]) == 0
+    assert cli.main(["dynamic", "siem-export", "--rule-id", "5f0b7a1e-1c2d-4a3b-9e8f-0a1b2c3d4e05", "--ruleset", "baseline-v1", "--target", "aws_cloudwatch", "--db", str(mc_env["db"])]) == 0
+
+
+def test_independent_audit_remediations_multicloud_and_siem(mc_env, capsys):
+    """Regression coverage for mixed-cloud auto ingest, enhancer preservation, closed-loop raw match, Sentinel KQL, and attack parity."""
+    from identity_shield.clouds import detect_and_normalize_audit_payload, list_providers, register_provider, registry as cloud_reg
+    from identity_shield.detect import enhancer as detect_enhancer
+    from identity_shield.detect.rules import load_sigma_text
+    from identity_shield.detect.siem_export import export_rule_to_siem, export_sigma_yaml_to_siem
+    from identity_shield.db.migrations import apply_migrations
+    from identity_shield.variants import closed_loop
+    import sqlite3
+
+    # 1. Mixed-cloud auto ingestion preserves GCP + Azure Entra + AWS records together
+    mixed = [
+        {"protoPayload": {"serviceName": "iam.googleapis.com", "methodName": "CreateServiceAccountKey", "status": {"code": 0}}, "resource": {"labels": {"project_id": "p-mix"}}},
+        {"id": "entra-mix-1", "createdDateTime": "2026-11-27T01:00:00Z", "userPrincipalName": "u@contoso.com", "conditionalAccessStatus": "notApplied", "status": {"errorCode": 0}},
+        {"eventVersion": "1.09", "eventSource": "sts.amazonaws.com", "eventName": "GetCallerIdentity", "eventTime": "2026-11-27T01:02:00Z", "awsRegion": "us-east-1"},
+    ]
+    norm = detect_and_normalize_audit_payload(mixed, cloud_provider="auto")
+    assert [e.cloud_provider for e in norm] == ["gcp", "azure", "aws"]
+
+    # 2. Nested dict Azure caller coerces cleanly to string principal & GCP integer code=7 stays unredacted
+    az_dict_caller = detect_and_normalize_audit_payload(
+        {"operationName": {"value": "Microsoft.Authorization/roleAssignments/write"}, "caller": {"upn": "alice@contoso.com"}, "resourceId": "/subscriptions/sub-1/rg"},
+        cloud_provider="azure",
+    )[0]
+    assert isinstance(az_dict_caller.principal, str) and az_dict_caller.principal == "alice@contoso.com"
+
+    gcp_denied = detect_and_normalize_audit_payload(
+        {"protoPayload": {"serviceName": "iam.googleapis.com", "methodName": "google.iam.admin.v1.CreateServiceAccountKey", "status": {"code": 7}}},
+        cloud_provider="gcp",
+    )[0]
+    sa_rule = load_sigma_text((config.CONF / "rules" / "gcp" / "gcp-T1098.001-sa-key-create.yml").read_text(encoding="utf-8"))
+    assert sa_rule.matches(gcp_denied.to_sigma_event()) is False
+
+    # 3. Rule Enhancer preserves non-AWS logsource.product
+    conn = connect(mc_env["db"])
+    try:
+        detect_replay.load_ruleset(conn, "gcp-baseline-v1")
+        gcp_row = conn.execute("SELECT rule_id FROM rule WHERE ruleset_version = 'gcp-baseline-v1' LIMIT 1").fetchone()
+        enh = detect_enhancer.build_enhanced_rule(conn, gcp_row["rule_id"])
+        assert "product: gcp" in enh["enhanced_yaml"]
+        assert "product: aws" not in enh["enhanced_yaml"]
+    finally:
+        conn.close()
+
+    # 4. Closed-loop hardened GCP rule matches raw native GCP Audit JSON and skips unsupported alternate_endpoint
+    gen_rule = closed_loop._write_closed_loop_sigma_rule(
+        {"cloud_provider": "gcp", "service": "storage.googleapis.com", "operation": "storage.objects.get", "technique_id": "T1530.GCP01", "tactic": "collection"},
+        [{"eventSource": "storage.googleapis.com", "eventName": "storage.objects.get"}],
+    )
+    loaded_cl = load_sigma_text(Path(gen_rule["path"]).read_text(encoding="utf-8"), path=gen_rule["path"])
+    assert loaded_cl.matches({"protoPayload": {"serviceName": "storage.googleapis.com", "methodName": "storage.objects.get"}}) is True
+
+    # 5. SIEM exporter uses AWSCloudTrail columns for Sentinel & escapes '/' in regexes
+    aws_rule = load_sigma_text((config.CONF / "rules" / "baseline" / "T1098.001-create-access-key.yml").read_text(encoding="utf-8"))
+    sent_aws = export_rule_to_siem(aws_rule, "azure_sentinel")
+    assert "AWSCloudTrail" in sent_aws["query"]
+    assert "EventName" in sent_aws["query"]
+    assert "ResourceProviderValue" not in sent_aws["query"]
+
+    slash_yaml = "title: Slash Rx\nid: 00000000-0000-0000-0000-000000000777\nlogsource:\n  product: gcp\n  service: gcp.audit\ndetection:\n  sel:\n    protoPayload.methodName|re: 'projects/.*/secrets/.*'\n  condition: sel\nlevel: medium\n"
+    cw_slash = export_sigma_yaml_to_siem(slash_yaml, "aws_cloudwatch")
+    sec_slash = export_sigma_yaml_to_siem(slash_yaml, "gcp_secops")
+    assert r"projects\/.*\/secrets\/.*" in cw_slash["query"]
+    assert r"projects\/.*\/secrets\/.*" in sec_slash["query"]
+
+    # 6. Multi-cloud techniques & cloud_provider filters surfaced across API & CLI + register_provider available
+    assert "aws" in list_providers() and callable(register_provider)
+    assert callable(cloud_reg.register_provider)
+    r_atk_gcp = _raw_asgi("GET", "/api/attacks?cloud_provider=gcp", headers={"x-identity-shield-token": web_app.get_session_token()})
+    assert r_atk_gcp.status_code == 200
+    assert any(a["technique_id"] == "T1098.GCP01" for a in r_atk_gcp.json()["attacks"])
+    r_rules_gcp = _raw_asgi("GET", "/api/rules?cloud_provider=gcp", headers={"x-identity-shield-token": web_app.get_session_token()})
+    assert r_rules_gcp.status_code == 200
+    assert r_rules_gcp.json()["rules"] and all(r["cloud_provider"] == "gcp" for r in r_rules_gcp.json()["rules"])
+    assert ops_cli.attacks_main(["list", "--cloud", "azure", "--json"]) == 0
+    assert any(a["technique_id"] == "T1078.AZ04" for a in json.loads(capsys.readouterr().out)["attacks"])
+
+    # 7. Ultra-old legacy alert schema without fixture_key migrates cleanly
+    old_db = sqlite3.connect(":memory:")
+    old_db.row_factory = sqlite3.Row
+    old_db.executescript(
+        "CREATE TABLE alert (alert_id TEXT PRIMARY KEY, rule_id TEXT, event_id TEXT, trial_id TEXT, emitted_at TEXT);"
+        "CREATE TABLE event (event_id TEXT PRIMARY KEY, trial_id TEXT, fixture_key TEXT, raw_hash TEXT, event_time TEXT, received_at TEXT, event_source TEXT, event_name TEXT, aws_region TEXT, source_ip TEXT, user_agent TEXT, user_identity_type TEXT, user_identity_arn TEXT, error_code TEXT, raw TEXT);"
+        "CREATE TABLE principal_profile (principal TEXT PRIMARY KEY, known_user_agents TEXT, known_regions TEXT, known_services TEXT, known_operations TEXT, known_hours TEXT, request_count INTEGER, last_seen TEXT);"
+    )
+    apply_migrations(old_db)
+    assert "fixture_key" in {r["name"] for r in old_db.execute("PRAGMA table_info(alert)").fetchall()}
+    old_db.close()
+
+
+def test_multicloud_bugfixes_enhancer_scoping_and_normalizers(mc_env):
+    from identity_shield.detect import enhancer
+
+    conn = connect(mc_env["db"])
+    try:
+        # 1. Enhancer filename isolation across AWS/GCP/Azure + provider-aware NO_ERROR_FILTER
+        detect_replay.load_ruleset(conn, "multicloud-v1")
+        enh_res = enhancer.enhance_entire_ruleset(
+            conn,
+            source_ruleset="multicloud-v1",
+            target_ruleset="enhanced-v1",
+        )
+        saved_names = sorted(Path(item["saved_path"]).name for item in enh_res["saved"])
+        assert enh_res["rules_generated"] >= 18
+        assert any(name.startswith("enhanced-gcp-") for name in saved_names)
+        assert any(name.startswith("enhanced-azure-") for name in saved_names)
+        assert any(name.startswith("enhanced-t") for name in saved_names)
+
+        gcp_with_err = {
+            "rule_id": "gcp-err-check",
+            "native_id": "gcp-err-check",
+            "ruleset_version": "multicloud-v1",
+            "technique_id": "T1098.GCP01",
+            "loader": "sigma",
+            "title": "GCP Err Filter",
+            "body": (
+                "title: GCP Err\nlogsource:\n  product: gcp\n  service: gcp.audit\n"
+                "detection:\n  sel:\n    protoPayload.methodName: google.iam.admin.v1.CreateServiceAccountKey\n"
+                "  filter_errors:\n    protoPayload.status.code: 7\n  condition: sel and not filter_errors\nlevel: high\n"
+            ),
+        }
+        audit_gcp = enhancer.audit_rule(conn, gcp_with_err)
+        assert "NO_ERROR_FILTER" not in {w["code"] for w in audit_gcp["weaknesses"]}
+
+        gcp_no_err = {
+            **gcp_with_err,
+            "rule_id": "gcp-no-err-check",
+            "native_id": "gcp-no-err-check",
+            "body": (
+                "title: GCP No Err\nlogsource:\n  product: gcp\n  service: gcp.audit\n"
+                "detection:\n  sel:\n    protoPayload.methodName: google.iam.admin.v1.CreateServiceAccountKey\n"
+                "  condition: sel\nlevel: high\n"
+            ),
+        }
+        audit_gcp_missing = enhancer.audit_rule(conn, gcp_no_err)
+        err_weak = [w for w in audit_gcp_missing["weaknesses"] if w["code"] == "NO_ERROR_FILTER"]
+        assert err_weak and "protoPayload.status.code" in err_weak[0]["fix"]
+
+        # 2. Cross-account dynamic baseline isolation (proj-a never leaks into proj-b)
+        for idx in range(3):
+            dynamic.evaluate_live_event(
+                conn,
+                {
+                    "cloud_provider": "gcp",
+                    "account_scope": "proj-a",
+                    "principal": "scoped-alice@example.com",
+                    "service": "storage.googleapis.com",
+                    "operation": "storage.buckets.get",
+                    "user_agent": "google-cloud-sdk/1.0",
+                    "aws_region": "us-central1",
+                    "timestamp": f"2026-11-27T12:0{idx}:00Z",
+                    "event_obj": {"cloudProvider": "gcp", "eventName": "storage.buckets.get"},
+                },
+                learn_baseline=True,
+            )
+        res_proj_b = dynamic.evaluate_live_event(
+            conn,
+            {
+                "cloud_provider": "gcp",
+                "account_scope": "proj-b",
+                "principal": "scoped-alice@example.com",
+                "service": "secretmanager.googleapis.com",
+                "operation": "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion",
+                "user_agent": "curl/8.4.0",
+                "aws_region": "europe-west1",
+                "timestamp": "2026-11-27T12:10:00Z",
+                "event_obj": {"cloudProvider": "gcp", "eventName": "AccessSecretVersion"},
+            },
+            learn_baseline=False,
+        )
+        assert res_proj_b["cold_start"] is True
+        assert "DYN-DRIFT-001" not in {r["rule_id"] for r in res_proj_b["matched_dynamic"]}
+
+        # 3. Dynamic replay keeps full dotted service names for GCP/Azure sensitive_services
+        conn.execute(
+            "INSERT INTO lab_run(run_id, started_at, aws_account_id, region, ruleset_version, synthetic) VALUES (?,?,?,?,?,?)",
+            ("run-mc-dyn", "2026-11-27T10:00:00Z", "000000000000", "global", "multicloud-v1", 1),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO technique(technique_id, name, tactic, executor, executor_ref, event_names, requires_data_events, success_check, required_actions) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("T1530.GCP01", "GCP Storage Read", "collection", "synthetic", None, '["storage.objects.get"]', 0, "{}", "[]"),
+        )
+        conn.execute(
+            "INSERT INTO variant(variant_id, technique_id, variant_set, factor_levels, seed, spec_sha256) VALUES (?,?,?,?,?,?)",
+            ("var-ben-gcp", "T1530.GCP01", "benign", "{}", 1, "sha-ben"),
+        )
+        conn.execute(
+            "INSERT INTO variant(variant_id, technique_id, variant_set, factor_levels, seed, spec_sha256) VALUES (?,?,?,?,?,?)",
+            ("var-atk-gcp", "T1530.GCP01", "baseline", "{}", 2, "sha-atk"),
+        )
+        conn.execute(
+            "INSERT INTO trial(trial_id, run_id, variant_id, repetition, window_start) VALUES (?,?,?,?,?)",
+            ("tr-ben-gcp", "run-mc-dyn", "var-ben-gcp", 1, "2026-11-27T10:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO trial(trial_id, run_id, variant_id, repetition, window_start) VALUES (?,?,?,?,?)",
+            ("tr-atk-gcp", "run-mc-dyn", "var-atk-gcp", 1, "2026-11-27T11:00:00Z"),
+        )
+        for i in range(3):
+            conn.execute(
+                """
+                INSERT INTO event(
+                    event_id, trial_id, event_time, received_at, cloud_provider, account_scope,
+                    source_type, event_source, event_name, aws_region, source_ip, user_agent,
+                    user_identity_type, user_identity_arn, error_code, raw
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    f"ev-gcp-ben-{i}",
+                    "tr-ben-gcp",
+                    f"2026-11-27T10:0{i}:00Z",
+                    f"2026-11-27T10:0{i}:01Z",
+                    "gcp",
+                    "proj-replay",
+                    "gcp_audit",
+                    "storage.googleapis.com",
+                    "storage.buckets.list",
+                    "us-central1",
+                    "10.10.0.5",
+                    "google-cloud-sdk/1.0",
+                    "ServiceAccount",
+                    "replay-sa@proj-replay.iam.gserviceaccount.com",
+                    "",
+                    json.dumps({"cloudProvider": "gcp"}),
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO event(
+                event_id, trial_id, event_time, received_at, cloud_provider, account_scope,
+                source_type, event_source, event_name, aws_region, source_ip, user_agent,
+                user_identity_type, user_identity_arn, error_code, raw
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "ev-gcp-atk-secret",
+                "tr-atk-gcp",
+                "2026-11-27T11:05:00Z",
+                "2026-11-27T11:05:01Z",
+                "gcp",
+                "proj-replay",
+                "gcp_audit",
+                "secretmanager.googleapis.com",
+                "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion",
+                "us-central1",
+                "10.10.0.5",
+                "google-cloud-sdk/1.0",
+                "ServiceAccount",
+                "replay-sa@proj-replay.iam.gserviceaccount.com",
+                "",
+                json.dumps({"cloudProvider": "gcp"}),
+            ),
+        )
+        conn.commit()
+        dyn_rep = dynamic.run_dynamic_replay(conn, run_id="run-mc-dyn")
+        assert dyn_rep["dynamic_alerts"] >= 1
+        drift_rows = conn.execute("SELECT summary FROM dynamic_alert WHERE source = 'batch' AND rule_id = 'DYN-DRIFT-001'").fetchall()
+        assert any("first-time sensitive service=secretmanager.googleapis.com" in r["summary"] for r in drift_rows)
+
+        # 4. Closed-loop alert vector mapping for GCP operations & denied error codes
+        conn.execute(
+            """
+            INSERT INTO event(
+                event_id, trial_id, event_time, received_at, cloud_provider, account_scope,
+                source_type, event_source, event_name, aws_region, source_ip, user_agent,
+                user_identity_type, user_identity_arn, error_code, raw
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "ev-gcp-denied-gcs",
+                "tr-atk-gcp",
+                "2026-11-27T11:06:00Z",
+                "2026-11-27T11:06:01Z",
+                "gcp",
+                "proj-replay",
+                "gcp_audit",
+                "storage.googleapis.com",
+                "storage.objects.get",
+                "us-central1",
+                "10.10.0.5",
+                "curl/8.4.0",
+                "ServiceAccount",
+                "replay-sa@proj-replay.iam.gserviceaccount.com",
+                "PERMISSION_DENIED",
+                json.dumps({"cloudProvider": "gcp"}),
+            ),
+        )
+        conn.commit()
+        prev = preview_closed_loop_vectors(conn, mode="from_alerts", cloud_provider="gcp")
+        assert any(v["technique_id"] == "T1530.GCP01" for v in prev["vectors"])
+
+        # 5. Dict-typed scalar field coercion in GCP & Azure normalizers
+        gcp_norm = detect_and_normalize_audit_payload(
+            {
+                "protoPayload": {
+                    "serviceName": "iam.googleapis.com",
+                    "methodName": "google.iam.admin.v1.CreateServiceAccountKey",
+                    "authenticationInfo": {"principalEmail": {"email": "sa@proj.iam.gserviceaccount.com"}},
+                },
+                "resource": {"type": "project", "labels": {"project_id": "proj-1"}},
+            }
+        )
+        assert gcp_norm[0].principal == "sa@proj.iam.gserviceaccount.com"
+
+        az_si_norm = detect_and_normalize_audit_payload(
+            {
+                "time": "2026-11-27T01:00:00Z",
+                "category": "SignInLogs",
+                "tenantId": {"id": "tenant-1"},
+                "userPrincipalName": {"value": "alice@contoso.com"},
+                "status": {"errorCode": 0},
+            }
+        )
+        assert az_si_norm[0].principal == "alice@contoso.com"
+        assert az_si_norm[0].account_scope == "tenant-1"
+
+        az_au_norm = detect_and_normalize_audit_payload(
+            {
+                "activityDateTime": "2026-11-27T01:00:00Z",
+                "category": "AuditLogs",
+                "activityDisplayName": {"value": "Add service principal credentials"},
+                "initiatedBy": {"user": {"userPrincipalName": {"upn": "admin@contoso.com"}}},
+                "result": "success",
+            }
+        )
+        assert az_au_norm[0].principal == "admin@contoso.com"
+        assert az_au_norm[0].operation == "Add service principal credentials"
+    finally:
+        conn.close()

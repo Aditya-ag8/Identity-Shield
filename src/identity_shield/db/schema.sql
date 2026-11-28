@@ -75,12 +75,30 @@ CREATE TABLE IF NOT EXISTS fixture (
 -- Logs
 -- ---------------------------------------------------------------------------
 
+CREATE TABLE IF NOT EXISTS schema_migration (
+  version            INTEGER PRIMARY KEY,
+  name               TEXT NOT NULL,
+  applied_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS technique_cloud_map (
+  technique_id       TEXT NOT NULL REFERENCES technique(technique_id),
+  cloud_provider     TEXT NOT NULL,
+  service            TEXT NOT NULL DEFAULT '',
+  operations_json    TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (technique_id, cloud_provider)
+);
+
 CREATE TABLE IF NOT EXISTS event (
-  event_id           TEXT PRIMARY KEY,        -- CloudTrail eventID
+  event_id           TEXT PRIMARY KEY,        -- CloudTrail eventID / GCP insertId / Azure eventDataId
   trial_id           TEXT REFERENCES trial(trial_id),
   fixture_key        TEXT REFERENCES fixture(fixture_key),
   event_time         TEXT NOT NULL,           -- ISO8601 UTC, 'YYYY-MM-DDTHH:MM:SSZ'
   received_at        TEXT NOT NULL,           -- collector (or receiptTime) timestamp
+  cloud_provider     TEXT NOT NULL DEFAULT 'aws',
+  account_scope      TEXT NOT NULL DEFAULT '',
+  source_type        TEXT NOT NULL DEFAULT 'cloudtrail',
+  schema_version     TEXT NOT NULL DEFAULT '1.0',
   event_source       TEXT,
   event_name         TEXT,
   aws_region         TEXT,
@@ -89,7 +107,7 @@ CREATE TABLE IF NOT EXISTS event (
   user_identity_type TEXT,
   user_identity_arn  TEXT,
   error_code         TEXT,
-  raw                TEXT NOT NULL            -- full JSON, verbatim
+  raw                TEXT NOT NULL            -- sanitized full JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_trial   ON event(trial_id);
@@ -129,6 +147,7 @@ CREATE TABLE IF NOT EXISTS alert (
   event_id           TEXT NOT NULL REFERENCES event(event_id),
   trial_id           TEXT,
   fixture_key        TEXT,
+  cloud_provider     TEXT NOT NULL DEFAULT 'aws',
   evaluated_at       TEXT NOT NULL,
   latency_ms         INTEGER,                 -- evaluated_at - event_time
   matched_fields     TEXT
@@ -217,3 +236,94 @@ CREATE INDEX IF NOT EXISTS idx_rule_ruleset     ON rule(ruleset_version);
 CREATE INDEX IF NOT EXISTS idx_trial_variant    ON trial(variant_id);
 CREATE INDEX IF NOT EXISTS idx_trial_run        ON trial(run_id);
 CREATE INDEX IF NOT EXISTS idx_variant_technique ON variant(technique_id, variant_set);
+
+-- ---------------------------------------------------------------------------
+-- Live Security Proxy & Adaptive Dynamic Detection Engine
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS proxy_event (
+  proxy_event_id            TEXT PRIMARY KEY,
+  timestamp                 TEXT NOT NULL,
+  cloud_provider            TEXT NOT NULL DEFAULT 'unknown',
+  account_scope             TEXT NOT NULL DEFAULT '',
+  traffic_type              TEXT NOT NULL DEFAULT 'http_app',
+  traffic_kind              TEXT NOT NULL,         -- legacy compat: aws_api | gcp_api | azure_api | http_app | connect_tunnel
+  classification_confidence TEXT NOT NULL DEFAULT 'high',
+  classification_reason     TEXT NOT NULL DEFAULT '',
+  mode                      TEXT NOT NULL,         -- observe | block
+  action_taken              TEXT NOT NULL,         -- allowed | observed | alerted | blocked
+  policy_decision           TEXT NOT NULL DEFAULT 'allowed',
+  policy_reason             TEXT NOT NULL DEFAULT '',
+  client_ip                 TEXT,
+  principal                 TEXT,
+  method                    TEXT,
+  target_host               TEXT,
+  path                      TEXT,
+  service                   TEXT,
+  operation                 TEXT,
+  user_agent                TEXT,
+  aws_region                TEXT,
+  params_json               TEXT,
+  status_code               INTEGER,
+  latency_ms                REAL,
+  risk_score                REAL NOT NULL DEFAULT 0.0,
+  matched_static            TEXT,                  -- JSON array of matched rules
+  matched_dynamic           TEXT,                  -- JSON array of dynamic rule hits
+  event_json                TEXT NOT NULL          -- Sanitized normalized JSON event
+);
+
+CREATE TABLE IF NOT EXISTS dynamic_rule (
+  rule_id         TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  kind            TEXT NOT NULL,         -- velocity | sequence | drift | app_anomaly
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  severity        TEXT NOT NULL DEFAULT 'medium',
+  window_seconds  INTEGER NOT NULL DEFAULT 60,
+  threshold       INTEGER NOT NULL DEFAULT 5,
+  config_json     TEXT NOT NULL,
+  description     TEXT,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dynamic_alert (
+  alert_id        TEXT PRIMARY KEY,
+  rule_id         TEXT NOT NULL,
+  rule_name       TEXT NOT NULL,
+  source          TEXT NOT NULL,         -- proxy | batch
+  ref_id          TEXT NOT NULL,         -- proxy_event_id | event_id
+  cloud_provider  TEXT NOT NULL DEFAULT 'aws',
+  account_scope   TEXT NOT NULL DEFAULT '',
+  ruleset_version TEXT,
+  timestamp       TEXT NOT NULL,
+  severity        TEXT NOT NULL,
+  principal       TEXT,
+  summary         TEXT NOT NULL,
+  evidence_json   TEXT,
+  action_taken    TEXT NOT NULL DEFAULT 'alerted'
+);
+
+CREATE TABLE IF NOT EXISTS principal_profile (
+  profile_key         TEXT PRIMARY KEY,
+  cloud_provider      TEXT NOT NULL DEFAULT 'aws',
+  account_scope       TEXT NOT NULL DEFAULT '',
+  principal           TEXT NOT NULL,
+  known_user_agents   TEXT NOT NULL DEFAULT '[]',
+  known_regions       TEXT NOT NULL DEFAULT '[]',
+  known_services      TEXT NOT NULL DEFAULT '[]',
+  known_operations    TEXT NOT NULL DEFAULT '[]',
+  known_hours         TEXT NOT NULL DEFAULT '[]',
+  request_count       INTEGER NOT NULL DEFAULT 0,
+  cold_start_complete INTEGER NOT NULL DEFAULT 0,
+  last_seen           TEXT NOT NULL,
+  UNIQUE (cloud_provider, account_scope, principal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_cloud_time        ON event(cloud_provider, event_time);
+CREATE INDEX IF NOT EXISTS idx_proxy_event_time        ON proxy_event(timestamp);
+CREATE INDEX IF NOT EXISTS idx_proxy_event_cloud       ON proxy_event(cloud_provider, timestamp);
+CREATE INDEX IF NOT EXISTS idx_proxy_event_principal   ON proxy_event(principal, timestamp);
+CREATE INDEX IF NOT EXISTS idx_proxy_event_action      ON proxy_event(action_taken);
+CREATE INDEX IF NOT EXISTS idx_dynamic_alert_time      ON dynamic_alert(timestamp);
+CREATE INDEX IF NOT EXISTS idx_dynamic_alert_cloud     ON dynamic_alert(cloud_provider, timestamp);
+CREATE INDEX IF NOT EXISTS idx_dynamic_alert_source    ON dynamic_alert(source, timestamp);
+CREATE INDEX IF NOT EXISTS idx_principal_profile_lookup ON principal_profile(cloud_provider, account_scope, principal);

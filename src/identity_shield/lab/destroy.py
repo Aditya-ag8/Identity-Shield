@@ -58,7 +58,9 @@ def teardown(
         after = before
         notes.append("check-only: terraform destroy was not run")
     else:
-        result = provision.destroy(directory, timeout=timeout)
+        tf_env = provision.aws_env(session=session, region=region)
+        tf_vars = {"region": region} if region else None
+        result = provision.destroy(directory, variables=tf_vars, timeout=timeout, env=tf_env)
         terraform_exit = result.returncode
         if not result.ok:
             notes.append(f"terraform destroy exited {result.returncode}")

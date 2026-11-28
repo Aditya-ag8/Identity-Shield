@@ -172,6 +172,12 @@ def convert_text(text: str, *, path: str | None = None) -> Rule:
     node = parse_condition(condition, selections)
 
     native_id = str(document.get("id") or (path or "unnamed"))
+    logsource = document.get("logsource") if isinstance(document.get("logsource"), Mapping) else {}
+    product = str(logsource.get("product") or "").strip().lower() or None
+    if product not in {"aws", "gcp", "azure", "generic", None}:
+        product = None
+    svc = str(logsource.get("service") or "").strip().lower() or None
+
     return Rule(
         native_id=native_id,
         title=str(document.get("title") or native_id),
@@ -183,6 +189,8 @@ def convert_text(text: str, *, path: str | None = None) -> Rule:
         node=node,
         description=str(document.get("description") or ""),
         fields=collect_fields(node),
+        cloud_provider=product,
+        logsource_service=svc,
     )
 
 

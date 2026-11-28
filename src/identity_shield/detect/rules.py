@@ -412,6 +412,16 @@ class Rule:
     fn: Callable[[Mapping[str, Any]], bool] | None = None
     description: str = ""
     fields: tuple[str, ...] = field(default_factory=tuple)
+    cloud_provider: str | None = None
+    logsource_service: str | None = None
+
+    def matches_cloud(self, event_cloud: str | None) -> bool:
+        """Return True if rule applies to the event's cloud provider."""
+        if not self.cloud_provider or not event_cloud:
+            return True
+        if self.cloud_provider in {"generic", "all", "unknown"}:
+            return True
+        return self.cloud_provider.lower() == str(event_cloud).lower()
 
     def matches(self, event: Mapping[str, Any]) -> bool:
         if self.fn is not None:
@@ -456,6 +466,11 @@ def rule_from_document(document: Mapping[str, Any], *, path: str | None = None) 
     node = parse_detection(detection)
     native_id = str(document.get("id") or (path or "unnamed"))
     body = yaml.safe_dump(document, sort_keys=False)
+    logsource = document.get("logsource") if isinstance(document.get("logsource"), Mapping) else {}
+    product = str(logsource.get("product") or "").strip().lower() or None
+    if product not in {"aws", "gcp", "azure", "generic", None}:
+        product = None
+    svc = str(logsource.get("service") or "").strip().lower() or None
 
     return Rule(
         native_id=native_id,
@@ -468,6 +483,8 @@ def rule_from_document(document: Mapping[str, Any], *, path: str | None = None) 
         node=node,
         description=str(document.get("description") or ""),
         fields=collect_fields(node),
+        cloud_provider=product,
+        logsource_service=svc,
     )
 
 

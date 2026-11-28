@@ -1,0 +1,25 @@
+title: Microsoft Entra Sign-In With Conditional Access Bypass or Auth Failure
+id: d8b2e904-4c3b-4d0f-9e20-2b3c4d5e0004
+status: test
+description: Detects suspicious Microsoft Entra sign-in events without Conditional Access enforcement or failing authentication.
+references:
+  - https://attack.mitre.org/techniques/T1078/004/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.initial-access
+  - attack.t1078.004
+logsource:
+  product: azure
+  service: signinlogs
+detection:
+  selection_ca:
+    conditionalAccessStatus: notApplied
+  selection_err:
+    status.errorCode:
+      - '50126'
+      - '53003'
+  condition: selection_ca or selection_err
+falsepositives:
+  - Service accounts exempt from Conditional Access
+level: medium

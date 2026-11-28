@@ -1,0 +1,94 @@
+# Multi-Cloud Synthetic & Live-Capable ATT&CK Technique Extensions (GCP & Azure)
+# Core AWS techniques remain intact in conf/techniques.yaml.
+
+version: 1
+techniques:
+  - technique_id: T1098.GCP01
+    cloud_provider: gcp
+    name: GCP Service Account Key Creation
+    tactic: persistence
+    service: iam.googleapis.com
+    executor: synthetic
+    event_names: [google.iam.admin.v1.CreateServiceAccountKey]
+    required_actions: [iam.serviceAccountKeys.create]
+
+  - technique_id: T1098.GCP03
+    cloud_provider: gcp
+    name: GCP Project IAM Policy Escalation (SetIamPolicy)
+    tactic: privilege-escalation
+    service: cloudresourcemanager.googleapis.com
+    executor: synthetic
+    event_names: [google.cloud.resourcemanager.v3.Projects.SetIamPolicy]
+    required_actions: [resourcemanager.projects.setIamPolicy]
+
+  - technique_id: T1530.GCP01
+    cloud_provider: gcp
+    name: GCP Cloud Storage Bucket Object Exfiltration
+    tactic: collection
+    service: storage.googleapis.com
+    executor: synthetic
+    event_names: [storage.objects.list, storage.objects.get]
+    required_actions: [storage.objects.get]
+
+  - technique_id: T1555.GCP06
+    cloud_provider: gcp
+    name: GCP Secret Manager Version Access
+    tactic: credential-access
+    service: secretmanager.googleapis.com
+    executor: synthetic
+    event_names: [google.cloud.secretmanager.v1.SecretManagerService.ListSecrets, google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion]
+    required_actions: [secretmanager.versions.access]
+
+  - technique_id: T1580.GCP01
+    cloud_provider: gcp
+    name: GCP Compute Infrastructure Discovery
+    tactic: discovery
+    service: compute.googleapis.com
+    executor: synthetic
+    event_names: [v1.compute.instances.list, v1.compute.firewalls.list]
+    required_actions: [compute.instances.list]
+
+  - technique_id: T1098.AZ03
+    cloud_provider: azure
+    name: Azure RBAC Role Assignment Escalation
+    tactic: privilege-escalation
+    service: Microsoft.Authorization
+    executor: synthetic
+    event_names: [Microsoft.Authorization/roleAssignments/write]
+    required_actions: [Microsoft.Authorization/roleAssignments/write]
+
+  - technique_id: T1098.AZ01
+    cloud_provider: azure
+    name: Microsoft Entra Service Principal Credential Addition
+    tactic: persistence
+    service: Microsoft.EntraID
+    executor: synthetic
+    event_names: [Add service principal credentials]
+    required_actions: [Application.ReadWrite.All]
+
+  - technique_id: T1555.AZ06
+    cloud_provider: azure
+    name: Azure Key Vault Secret Retrieval
+    tactic: credential-access
+    service: Microsoft.KeyVault
+    executor: synthetic
+    event_names: [SecretList, SecretGet]
+    required_actions: [Microsoft.KeyVault/vaults/secrets/getSecret/action]
+
+  - technique_id: T1078.AZ04
+    cloud_provider: azure
+    name: Microsoft Entra Sign-In Without Conditional Access
+    tactic: initial-access
+    service: Microsoft.EntraID
+    executor: synthetic
+    event_names: [UserSignIn]
+    required_actions: [AuditLog.Read.All]
+
+  - technique_id: T1580.AZ01
+    cloud_provider: azure
+    name: Azure Virtual Machine & Network Discovery
+    tactic: discovery
+    service: Microsoft.Compute
+    executor: synthetic
+    event_names: [Microsoft.Compute/virtualMachines/read]
+    required_actions: [Microsoft.Compute/virtualMachines/read]

@@ -70,6 +70,8 @@ class Boto3Executor:
             "T1552.005": self._instance_metadata,
             "T1530": self._object_read,
         }.get(ctx.technique.technique_id)
+        if handler is None and getattr(ctx.technique, "api_calls", ()):
+            handler = self._custom_api
         if handler is None:
             return ExecutionResult(
                 ok=False, error=f"no boto3 executor for {ctx.technique.technique_id}"
@@ -78,6 +80,56 @@ class Boto3Executor:
             return handler(ctx)
         except Exception as exc:  # noqa: BLE001 - the failure is recorded, not hidden
             return ExecutionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    def _custom_api(self, ctx: TrialContext) -> ExecutionResult:
+        """Declarative executor for user-added custom attacks."""
+        substitutions = {
+            "{bucket}": _lab(ctx, "data_bucket", "is-lab-crown-jewels"),
+            "{key}": _lab(ctx, "data_key", "finance/q4.csv"),
+            "{instance_id}": _lab(ctx, "instance_id", ""),
+            "{test_user}": _lab(ctx, "test_user_name", "is-test-user"),
+            "{admin_role}": _lab(ctx, "admin_role_name", "is-admin-role"),
+            "{account_id}": ctx.account_id,
+            "{region}": ctx.region,
+        }
+
+        def _render(value: Any) -> Any:
+            if isinstance(value, str):
+                out = value
+                for token, actual in substitutions.items():
+                    out = out.replace(token, str(actual))
+                return out
+            if isinstance(value, list):
+                return [_render(item) for item in value]
+            if isinstance(value, Mapping):
+                return {k: _render(v) for k, v in value.items()}
+            return value
+
+        evidence: dict[str, Any] = {
+            "api_form": ctx.variant.factor_levels.get("api_form", "canonical"),
+            "services": {},
+            "calls": [],
+            "succeeded_calls": 0,
+        }
+        for spec in getattr(ctx.technique, "api_calls", ()):
+            service = str(spec.get("service") or "").strip().lower()
+            operation = str(spec.get("operation") or "").strip()
+            kwargs = _render(dict(spec.get("kwargs") or {}))
+            if not service or not operation:
+                continue
+            try:
+                response = getattr(_client(ctx, service), operation)(**kwargs)
+                keys = sorted(response)[:8] if isinstance(response, dict) else True
+                evidence["services"][f"{service}:{operation}"] = keys
+                evidence["calls"].append({"service": service, "operation": operation, "ok": True})
+                evidence["succeeded_calls"] += 1
+            except Exception as exc:  # noqa: BLE001
+                err_msg = f"error: {type(exc).__name__}: {exc}"
+                evidence["services"][f"{service}:{operation}"] = err_msg
+                evidence["calls"].append({"service": service, "operation": operation, "ok": False, "error": err_msg})
+        ok = evidence["succeeded_calls"] > 0
+        error = None if ok else "all custom API calls failed"
+        return ExecutionResult(ok=ok, evidence=evidence, error=error)
 
     # -- discovery ---------------------------------------------------------
 

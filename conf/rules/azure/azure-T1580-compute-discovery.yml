@@ -1,0 +1,23 @@
+title: Azure Virtual Machine or Resource Infrastructure Read
+id: d8b2e905-4c3b-4d0f-9e20-2b3c4d5e0005
+status: test
+description: Detects read/listing discovery across Azure compute virtual machines or network security groups.
+references:
+  - https://attack.mitre.org/techniques/T1580/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.discovery
+  - attack.t1580
+logsource:
+  product: azure
+  service: activitylogs
+detection:
+  selection_vm:
+    operationName.value|contains:
+      - virtualMachines/read
+      - networkSecurityGroups/read
+  condition: selection_vm
+falsepositives:
+  - Azure inventory monitoring
+level: medium

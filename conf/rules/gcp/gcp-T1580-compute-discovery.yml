@@ -1,0 +1,25 @@
+title: GCP Compute Infrastructure Enumeration
+id: c7a1d805-3b2a-4c9e-8d10-1a2b3c4d0005
+status: test
+description: Detects enumeration of GCE instances, firewalls, or networks.
+references:
+  - https://attack.mitre.org/techniques/T1580/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.discovery
+  - attack.t1580
+logsource:
+  product: gcp
+  service: gcp.audit
+detection:
+  selection:
+    protoPayload.serviceName: compute.googleapis.com
+    protoPayload.methodName|endswith:
+      - instances.list
+      - firewalls.list
+      - networks.list
+  condition: selection
+falsepositives:
+  - Cloud inventory scanners
+level: medium

@@ -397,3 +397,187 @@ def summarise(census: Census) -> dict[str, int]:
 def iter_services(census: Census) -> Iterator[str]:
     for service in sorted({resource.service for resource in census.resources}):
         yield service
+
+
+def collect_live_inventory(
+    session: Any,
+    *,
+    region: str | None = None,
+    data_bucket: str | None = None,
+    data_key: str | None = None,
+) -> dict[str, Any]:
+    """Read-only deep probe for the Control Plane GUI & CLI live inspector.
+
+    Collects EC2 instance states, SSM online status, CloudTrail trail logging status,
+    SQS queue message counts, S3 buckets (and optional target object check), and IAM test principals.
+    Never mutates AWS state and gracefully records any permission gaps per service.
+    """
+    resolved_region = region or getattr(session, "region", None) or "eu-west-1"
+    inventory: dict[str, Any] = {
+        "region": resolved_region,
+        "ec2_instances": [],
+        "trails": [],
+        "queues": [],
+        "buckets": [],
+        "iam_roles": [],
+        "iam_users": [],
+        "errors": [],
+    }
+
+    # SSM status map (instance_id -> PingStatus)
+    ssm_status: dict[str, dict[str, str]] = {}
+    try:
+        ssm = session.client("ssm", region_name=resolved_region)
+        for info in _paginate(ssm, "describe_instance_information", "InstanceInformationList"):
+            iid = info.get("InstanceId")
+            if iid:
+                ssm_status[str(iid)] = {
+                    "ping_status": str(info.get("PingStatus") or "Unknown"),
+                    "platform": str(info.get("PlatformName") or ""),
+                    "agent_version": str(info.get("AgentVersion") or ""),
+                }
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "ssm", "describe_instance_information", exc)
+
+    # EC2 instances
+    try:
+        ec2 = session.client("ec2", region_name=resolved_region)
+        for res in _paginate(ec2, "describe_instances", "Reservations"):
+            for inst in res.get("Instances") or ():
+                iid = str(inst.get("InstanceId") or "")
+                tags = _tags(inst.get("Tags"))
+                profile = inst.get("IamInstanceProfile") or {}
+                ssm_info = ssm_status.get(iid, {})
+                inventory["ec2_instances"].append(
+                    {
+                        "instance_id": iid,
+                        "name": tags.get("Name") or iid,
+                        "state": str((inst.get("State") or {}).get("Name") or "unknown"),
+                        "instance_type": str(inst.get("InstanceType") or ""),
+                        "private_ip": inst.get("PrivateIpAddress"),
+                        "public_ip": inst.get("PublicIpAddress"),
+                        "iam_profile": profile.get("Arn"),
+                        "ssm_status": ssm_info.get("ping_status", "Not Registered"),
+                        "lab_owned": LAB_TAG_KEY in tags or str(tags.get("Name", "")).startswith(NAME_PREFIX),
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "ec2", "describe_instances", exc)
+
+    # CloudTrail trails + live logging status
+    try:
+        ct = session.client("cloudtrail", region_name=resolved_region)
+        for trail in ct.describe_trails(includeShadowTrails=False).get("trailList") or ():
+            name = str(trail.get("Name") or "")
+            is_logging = False
+            latest_delivery = None
+            has_data_events = False
+            try:
+                status = ct.get_trail_status(Name=name)
+                is_logging = bool(status.get("IsLogging"))
+                dt = status.get("LatestDeliveryTime")
+                latest_delivery = dt.isoformat() if hasattr(dt, "isoformat") else (str(dt) if dt else None)
+            except Exception as exc:  # noqa: BLE001
+                _note(inventory["errors"], "cloudtrail", "get_trail_status", exc)
+            try:
+                selectors = ct.get_event_selectors(TrailName=name)
+                for es in selectors.get("EventSelectors") or ():
+                    for dr in es.get("DataResources") or ():
+                        if dr.get("Type") == "AWS::S3::Object":
+                            has_data_events = True
+                for aes in selectors.get("AdvancedEventSelectors") or ():
+                    for fs in aes.get("FieldSelectors") or ():
+                        if "S3" in str(fs.get("Equals") or ""):
+                            has_data_events = True
+            except Exception:
+                pass
+            inventory["trails"].append(
+                {
+                    "name": name,
+                    "arn": trail.get("TrailARN"),
+                    "s3_bucket": trail.get("S3BucketName"),
+                    "home_region": trail.get("HomeRegion"),
+                    "multi_region": bool(trail.get("IsMultiRegionTrail")),
+                    "is_logging": is_logging,
+                    "latest_delivery": latest_delivery,
+                    "s3_data_events": has_data_events,
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "cloudtrail", "describe_trails", exc)
+
+    # SQS queues
+    try:
+        sqs = session.client("sqs", region_name=resolved_region)
+        for url in _paginate(sqs, "list_queues", "QueueUrls"):
+            name = str(url).rstrip("/").rsplit("/", 1)[-1]
+            msgs = None
+            try:
+                attrs = sqs.get_queue_attributes(
+                    QueueUrl=url,
+                    AttributeNames=["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
+                ).get("Attributes") or {}
+                msgs = int(attrs.get("ApproximateNumberOfMessages", 0))
+            except Exception:
+                pass
+            inventory["queues"].append(
+                {
+                    "name": name,
+                    "url": str(url),
+                    "messages_available": msgs,
+                    "lab_owned": name.startswith((LAB_NAME, NAME_PREFIX)),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "sqs", "list_queues", exc)
+
+    # S3 buckets
+    try:
+        s3 = session.client("s3", region_name=resolved_region)
+        for bucket in s3.list_buckets().get("Buckets") or ():
+            name = str(bucket.get("Name") or "")
+            target_present = None
+            if data_bucket and name == data_bucket and data_key:
+                try:
+                    s3.head_object(Bucket=name, Key=data_key)
+                    target_present = True
+                except Exception:
+                    target_present = False
+            inventory["buckets"].append(
+                {
+                    "name": name,
+                    "lab_owned": name.startswith((NAME_PREFIX, LAB_NAME)) or name == data_bucket,
+                    "target_key_present": target_present,
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "s3", "list_buckets", exc)
+
+    # IAM users & roles (filtered to lab-relevant or capped preview)
+    try:
+        iam = session.client("iam", region_name=resolved_region)
+        for u in _paginate(iam, "list_users", "Users"):
+            uname = str(u.get("UserName") or "")
+            arn = str(u.get("Arn") or "")
+            inventory["iam_users"].append(
+                {
+                    "name": uname,
+                    "arn": arn,
+                    "lab_owned": uname.startswith((NAME_PREFIX, LAB_NAME)) or IAM_PATH_PREFIX in arn,
+                }
+            )
+        for r in _paginate(iam, "list_roles", "Roles"):
+            rname = str(r.get("RoleName") or "")
+            arn = str(r.get("Arn") or "")
+            if rname.startswith((NAME_PREFIX, LAB_NAME, "IdentityShield")) or IAM_PATH_PREFIX in arn:
+                inventory["iam_roles"].append(
+                    {
+                        "name": rname,
+                        "arn": arn,
+                        "lab_owned": True,
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        _note(inventory["errors"], "iam", "list_roles", exc)
+
+    return inventory

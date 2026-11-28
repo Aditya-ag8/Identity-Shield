@@ -1,0 +1,26 @@
+title: GCP Cloud Storage Data Access
+id: c7a1d803-3b2a-4c9e-8d10-1a2b3c4d0003
+status: test
+description: Detects GCS object enumeration or read operations in Cloud Audit Logs.
+references:
+  - https://attack.mitre.org/techniques/T1530/
+author: Identity Shield
+date: 2026/11/27
+tags:
+  - attack.collection
+  - attack.t1530
+logsource:
+  product: gcp
+  service: gcp.audit
+detection:
+  selection:
+    protoPayload.serviceName: storage.googleapis.com
+    protoPayload.methodName:
+      - storage.objects.get
+      - storage.objects.list
+  condition: selection and not filter_denied
+  filter_denied:
+    protoPayload.status.code: 7
+falsepositives:
+  - Authorized application bucket reads
+level: medium
