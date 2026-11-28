@@ -43,7 +43,11 @@ const STATE = {
   doctorData: null,
   templatesData: null,
   templateTab: "single-account",
+  connCloud: "aws",
   connMode: "profile",
+  gcpConnMode: "gcloud_adc",
+  azureConnMode: "az_cli",
+  mcCensusData: null,
   activeJobId: null,
   jobLines: [],
   jobStatus: "idle",
@@ -80,6 +84,24 @@ const AWS_REGIONS = [
   { value: "ap-southeast-1", hint: "Singapore" },
   { value: "ap-northeast-1", hint: "Tokyo" },
   { value: "ca-central-1", hint: "Canada" },
+];
+
+const GCP_REGIONS = [
+  { value: "us-central1", hint: "Iowa" },
+  { value: "us-east1", hint: "South Carolina" },
+  { value: "europe-west1", hint: "Belgium" },
+  { value: "europe-west2", hint: "London" },
+  { value: "asia-south1", hint: "Mumbai" },
+  { value: "asia-southeast1", hint: "Singapore" },
+];
+
+const AZURE_LOCATIONS = [
+  { value: "eastus", hint: "East US" },
+  { value: "westus2", hint: "West US 2" },
+  { value: "westeurope", hint: "West Europe" },
+  { value: "uksouth", hint: "UK South" },
+  { value: "centralindia", hint: "Central India" },
+  { value: "southeastasia", hint: "Southeast Asia" },
 ];
 
 const SERVICE_OPERATIONS = {
@@ -456,15 +478,48 @@ function updateHeaderAndSidebar() {
   const dot = document.getElementById("sidebar-db-dot");
   dot.className = db.exists ? (db.events > 0 || db.proxy_events > 0 ? "dot" : "dot warn") : "dot err";
 
-  const conn = s.connection || {};
+  const conns = s.connections || {};
+  const connAws = conns.aws || s.connection || {};
   const chipAws = document.getElementById("pill-aws");
-  if (conn.connected) {
-    const reg = (conn.descriptor || {}).region || "";
-    chipAws.className = "status-chip ok";
-    chipAws.innerHTML = `<span class="dot"></span><span>AWS: ${esc(conn.account_id)} (${esc(reg)})</span>`;
-  } else {
-    chipAws.className = "status-chip warn";
-    chipAws.innerHTML = `<span class="dot warn"></span><span>AWS: Offline</span>`;
+  if (chipAws) {
+    if (connAws.connected) {
+      const reg = (connAws.descriptor || {}).region || "";
+      chipAws.className = "status-chip ok";
+      chipAws.innerHTML = `<span class="dot"></span><span>AWS: ${esc(connAws.account_id)} (${esc(reg)})</span>`;
+    } else {
+      chipAws.className = "status-chip warn";
+      chipAws.innerHTML = `<span class="dot warn"></span><span>AWS: Offline</span>`;
+    }
+  }
+
+  const connGcp = conns.gcp || {};
+  const chipGcp = document.getElementById("pill-gcp");
+  if (chipGcp) {
+    if (connGcp.connected) {
+      const id = connGcp.identity || {};
+      const label = id.organization_id ? `org:${id.organization_id}` : (id.project_id || id.principal || "Connected");
+      chipGcp.className = "status-chip ok";
+      chipGcp.innerHTML = `<span class="dot"></span><span>GCP: ${esc(label)}</span>`;
+    } else {
+      chipGcp.className = "status-chip warn";
+      chipGcp.innerHTML = `<span class="dot warn"></span><span>GCP: Offline</span>`;
+    }
+  }
+
+  const connAz = conns.azure || {};
+  const chipAz = document.getElementById("pill-azure");
+  if (chipAz) {
+    if (connAz.connected) {
+      const id = connAz.identity || {};
+      const label = (id.scope === "organization" && id.management_group_id)
+        ? `org:${id.management_group_id}`
+        : (id.subscription_id ? `sub:${String(id.subscription_id).slice(0, 8)}` : (id.tenant_id || "Connected"));
+      chipAz.className = "status-chip ok";
+      chipAz.innerHTML = `<span class="dot"></span><span>Azure: ${esc(label)}</span>`;
+    } else {
+      chipAz.className = "status-chip warn";
+      chipAz.innerHTML = `<span class="dot warn"></span><span>Azure: Offline</span>`;
+    }
   }
 
   const pStat = s.proxy_status || {};
@@ -795,14 +850,25 @@ async function renderOverview(root) {
 
 async function renderConnections(root) {
   if (!STATE.templatesData) STATE.templatesData = (await api("/api/connect/templates")).templates;
-  const conn = STATE.app.connection || {};
-  const desc = conn.descriptor || {};
+  const conns = STATE.app.connections || {};
+  const connAws = conns.aws || STATE.app.connection || {};
+  const connGcp = conns.gcp || {};
+  const connAz = conns.azure || {};
+  const descAws = connAws.descriptor || {};
+  const descGcp = connGcp.descriptor || {};
+  const descAz = connAz.descriptor || {};
+  const cloudProfiles = STATE.app.cloud_profiles || {};
   const db = STATE.app.db || {};
   const stor = STATE.app.storage || {};
   const sizeKb = ((db.size_bytes || 0) / 1024).toFixed(1);
-  const profiles = Array.from(new Set([...(STATE.app.profiles || []), "default", "lab", "dev", "prod"]));
-  const rolePresets = desc.role_arn
-    ? [desc.role_arn, "arn:aws:iam::123456789012:role/IdentityShieldExecutionRole"]
+  const profiles = Array.from(new Set([...(cloudProfiles.aws || STATE.app.profiles || []), "default", "lab", "dev", "prod"]));
+  const gcpProjects = Array.from(
+    new Set([...(cloudProfiles.gcp || []).map((c) => c.project).filter(Boolean), ...(descGcp.project_id ? [descGcp.project_id] : [])])
+  ).map((p) => ({ value: p, hint: "gcloud" }));
+  const gcpConfigs = (cloudProfiles.gcp || []).map((c) => ({ value: c.name, hint: c.project || c.account || "gcloud" }));
+  const azSubs = (cloudProfiles.azure || []).map((s) => ({ value: s.id, label: s.name || s.id, hint: s.tenant_id ? s.tenant_id.slice(0, 8) : "az" }));
+  const rolePresets = descAws.role_arn
+    ? [descAws.role_arn, "arn:aws:iam::123456789012:role/IdentityShieldExecutionRole"]
     : ["arn:aws:iam::123456789012:role/IdentityShieldExecutionRole"];
 
   const tpl = STATE.templatesData[STATE.templateTab] || { files: {} };
@@ -820,100 +886,276 @@ async function renderConnections(root) {
     )
     .join("");
 
-  root.innerHTML = `
-    <div class="grid grid-2">
+  const activeCloud = STATE.connCloud || "aws";
+  let leftCard = "";
+  let rightCard = "";
+
+  if (activeCloud === "aws") {
+    leftCard = `
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">Connect AWS</h3>
-          <span class="badge ${conn.connected ? "ok" : "warn"}">${conn.connected ? "Connected" : "Disconnected"}</span>
+          <span class="badge ${connAws.connected ? "ok" : "warn"}">${connAws.connected ? "Connected" : "Disconnected"}</span>
         </div>
-
         <div class="form-grid">
           <div class="field">
             <label>Authentication Method</label>
             <select id="conn-mode">
-              <option value="profile" ${STATE.connMode === "profile" ? "selected" : ""}>Local AWS CLI Profile</option>
-              <option value="assume_role" ${STATE.connMode === "assume_role" ? "selected" : ""}>Client IAM Role (STS AssumeRole)</option>
+              <option value="profile" ${STATE.connMode === "profile" ? "selected" : ""}>Local AWS CLI / SSO Profile</option>
+              <option value="assume_role" ${STATE.connMode === "assume_role" ? "selected" : ""}>Client IAM Role / Org Cross-Account (STS AssumeRole)</option>
+              <option value="env_default" ${STATE.connMode === "env_default" ? "selected" : ""}>Ambient Env / OIDC Web Identity / Host Role</option>
               <option value="in_memory" ${STATE.connMode === "in_memory" ? "selected" : ""}>Temporary Keys (Session RAM Only)</option>
             </select>
           </div>
-
           <div class="grid grid-2">
             <div class="field">
               <label>AWS Region</label>
-              ${comboHtml("conn-region", desc.region || "eu-west-1", AWS_REGIONS, { mono: true })}
+              ${comboHtml("conn-region", descAws.region || "eu-west-1", AWS_REGIONS, { mono: true })}
             </div>
             <div class="field">
               <label>Scope</label>
               <select id="conn-scope">
-                <option value="single_account" ${desc.scope === "single_account" ? "selected" : ""}>Single Account</option>
-                <option value="organization" ${desc.scope === "organization" ? "selected" : ""}>AWS Organization</option>
+                <option value="single_account" ${descAws.scope === "single_account" ? "selected" : ""}>Single Account</option>
+                <option value="organization" ${descAws.scope === "organization" ? "selected" : ""}>AWS Organization</option>
               </select>
             </div>
           </div>
-
           ${STATE.connMode === "profile"
-      ? `
-                <div class="field">
-                  <label>AWS Profile</label>
-                  ${comboHtml("conn-profile", desc.profile_name || "default", profiles, { mono: true, placeholder: "default" })}
-                </div>
-              `
+      ? `<div class="field"><label>AWS Profile</label>${comboHtml("conn-profile", descAws.profile_name || "default", profiles, { mono: true, placeholder: "default" })}</div>`
       : STATE.connMode === "assume_role"
         ? `
-                  <div class="field">
-                    <label>Target Role ARN</label>
-                    ${comboHtml("conn-role-arn", desc.role_arn || "", rolePresets, { mono: true, placeholder: "arn:aws:iam::ACCOUNT:role/RoleName" })}
-                  </div>
-                  <div class="grid grid-2">
-                    <div class="field">
-                      <label>Base Profile</label>
-                      ${comboHtml("conn-profile", desc.profile_name || "default", profiles, { mono: true })}
-                    </div>
-                    <div class="field">
-                      <label>External ID</label>
-                      ${comboHtml("conn-external-id", desc.external_id || "", ["identity-shield-ext"], { mono: true, placeholder: "Optional" })}
-                    </div>
-                  </div>
-                `
-        : `
-                  <div class="notice warn">Keys stay in backend memory for this session only and are never saved to disk.</div>
-                  <div class="field"><label>Access Key ID</label><input class="mono" type="password" id="conn-ak" /></div>
-                  <div class="field"><label>Secret Access Key</label><input class="mono" type="password" id="conn-sk" /></div>
-                  <div class="field"><label>Session Token (Optional)</label><input class="mono" type="password" id="conn-st" /></div>
-                `
+          <div class="field"><label>Target Role ARN</label>${comboHtml("conn-role-arn", descAws.role_arn || "", rolePresets, { mono: true, placeholder: "arn:aws:iam::ACCOUNT:role/RoleName" })}</div>
+          <div class="grid grid-2">
+            <div class="field"><label>Base Profile</label>${comboHtml("conn-profile", descAws.profile_name || "default", profiles, { mono: true })}</div>
+            <div class="field"><label>External ID</label>${comboHtml("conn-external-id", descAws.external_id || "", ["identity-shield-ext"], { mono: true, placeholder: "Optional" })}</div>
+          </div>`
+        : STATE.connMode === "env_default"
+          ? `<div class="notice info">Uses active process environment credentials (AWS_ACCESS_KEY_ID, AWS_WEB_IDENTITY_TOKEN_FILE, or host IAM role).</div>`
+          : `
+            <div class="notice warn">Keys stay in backend memory for this session only and are never saved to disk.</div>
+            <div class="field"><label>Access Key ID</label><input class="mono" type="password" id="conn-ak" /></div>
+            <div class="field"><label>Secret Access Key</label><input class="mono" type="password" id="conn-sk" /></div>
+            <div class="field"><label>Session Token (Optional)</label><input class="mono" type="password" id="conn-st" /></div>`
     }
-
           <div class="row-flex" style="margin-top:4px">
-            <button type="button" class="btn btn-primary" id="btn-test-connect">Connect & Verify</button>
-            ${conn.connected ? `<button type="button" class="btn btn-secondary" id="btn-disconnect">Disconnect</button>` : ""}
+            <button type="button" class="btn btn-primary" id="btn-test-connect">Connect &amp; Verify AWS</button>
+            ${connAws.connected ? `<button type="button" class="btn btn-secondary" id="btn-disconnect">Disconnect</button>` : ""}
           </div>
         </div>
-      </div>
-
+      </div>`;
+    rightCard = `
       <div class="card">
-        <div class="card-header"><h3 class="card-title">Session Identity</h3></div>
-        ${conn.connected
+        <div class="card-header"><h3 class="card-title">AWS Session Identity</h3></div>
+        ${connAws.connected
       ? `
-              <div class="table-wrap" style="margin-bottom:14px">
-                <table>
-                  <tbody>
-                    <tr><th>Account ID</th><td class="mono">${esc(conn.account_id)}</td></tr>
-                    <tr><th>Caller ARN</th><td class="mono">${esc(conn.caller_arn)}</td></tr>
-                    <tr><th>Org Status</th><td>${esc((conn.classification || {}).organization_status || "unknown")}</td></tr>
-                    <tr><th>Effective Scope</th><td>${esc((conn.classification || {}).effective_scope)}</td></tr>
-                  </tbody>
-                </table>
-              </div>
-              <button type="button" class="btn btn-secondary" data-goto="lab">Configure Lab Resources →</button>
-            `
-      : `<div class="muted-text" style="padding:18px 0">Not connected. Choose an authentication method on the left and click Connect & Verify.</div>`
+          <div class="table-wrap" style="margin-bottom:14px">
+            <table><tbody>
+              <tr><th>Account ID</th><td class="mono">${esc(connAws.account_id)}</td></tr>
+              <tr><th>Caller ARN</th><td class="mono">${esc(connAws.caller_arn)}</td></tr>
+              <tr><th>Org Status</th><td>${esc((connAws.classification || {}).organization_status || "unknown")}</td></tr>
+              <tr><th>Effective Scope</th><td>${esc((connAws.classification || {}).effective_scope)}</td></tr>
+            </tbody></table>
+          </div>
+          <div class="row-flex">
+            <button type="button" class="btn btn-secondary" data-goto="logs">Pull CloudTrail SIEM Logs →</button>
+            <button type="button" class="btn btn-secondary" data-goto="lab">Lab Resources →</button>
+          </div>`
+      : `<div class="muted-text" style="padding:18px 0">AWS is not connected. Select an authentication method and click Connect &amp; Verify AWS.</div>`
     }
+      </div>`;
+  } else if (activeCloud === "gcp") {
+    const gid = connGcp.identity || {};
+    leftCard = `
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Connect Google Cloud (GCP)</h3>
+          <span class="badge ${connGcp.connected ? "ok" : "warn"}">${connGcp.connected ? "Connected" : "Disconnected"}</span>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Authentication Method</label>
+            <select id="gcp-conn-mode">
+              <option value="gcloud_adc" ${STATE.gcpConnMode === "gcloud_adc" ? "selected" : ""}>Local gcloud CLI / Application Default Credentials (ADC)</option>
+              <option value="impersonate_sa" ${STATE.gcpConnMode === "impersonate_sa" ? "selected" : ""}>Service Account Impersonation (IAM Credentials API)</option>
+              <option value="service_account_json" ${STATE.gcpConnMode === "service_account_json" ? "selected" : ""}>Service Account Key JSON (Session RAM Only)</option>
+              <option value="workload_identity" ${STATE.gcpConnMode === "workload_identity" ? "selected" : ""}>Workload Identity Federation (External OIDC -> STS)</option>
+              <option value="in_memory_token" ${STATE.gcpConnMode === "in_memory_token" ? "selected" : ""}>OAuth 2.0 Bearer Access Token (Session RAM Only)</option>
+            </select>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Scope</label>
+              <select id="gcp-scope">
+                <option value="single_project" ${descGcp.scope === "single_project" ? "selected" : ""}>Single Project / User</option>
+                <option value="organization" ${descGcp.scope === "organization" ? "selected" : ""}>Whole GCP Organization</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Default Region</label>
+              ${comboHtml("gcp-region", descGcp.region || "us-central1", GCP_REGIONS, { mono: true })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Project ID (Optional if auto-discovered)</label>
+              ${comboHtml("gcp-project-id", descGcp.project_id || "", gcpProjects, { mono: true, placeholder: "my-gcp-project" })}
+            </div>
+            <div class="field">
+              <label>Organization ID (For Org SIEM)</label>
+              <input class="mono" id="gcp-org-id" value="${esc(descGcp.organization_id || "")}" placeholder="Optional (e.g. 123456789012)" />
+            </div>
+          </div>
+          ${STATE.gcpConnMode === "gcloud_adc"
+      ? `<div class="field"><label>gcloud Configuration (Optional)</label>${comboHtml("gcp-gcloud-cfg", descGcp.gcloud_config || "", gcpConfigs, { mono: true, placeholder: "Active configuration" })}</div>`
+      : STATE.gcpConnMode === "impersonate_sa"
+        ? `<div class="field"><label>Target Service Account Email</label><input class="mono" id="gcp-sa-email" value="${esc(descGcp.service_account || "")}" placeholder="identity-shield-siem@project.iam.gserviceaccount.com" /></div>`
+        : STATE.gcpConnMode === "service_account_json"
+          ? `<div class="notice warn">Service account private key stays in backend RAM only and is never written to SQLite or disk.</div><div class="field"><label>Service Account Key JSON</label><textarea class="mono" id="gcp-sa-json" rows="4" placeholder='{"type":"service_account","project_id":"...","client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----..."}'></textarea></div>`
+          : STATE.gcpConnMode === "workload_identity"
+            ? `<div class="field"><label>WIF Provider Audience</label><input class="mono" id="gcp-wif-aud" placeholder="//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/oidc" /></div><div class="field"><label>External OIDC Subject Token (RAM Only)</label><input class="mono" type="password" id="gcp-wif-tok" /></div>`
+            : `<div class="notice warn">OAuth token stays in backend memory for this session only.</div><div class="field"><label>GCP OAuth Access Token</label><input class="mono" type="password" id="gcp-token" placeholder="ya29...." /></div>`
+    }
+          <div class="row-flex" style="margin-top:4px">
+            <button type="button" class="btn btn-primary" id="btn-gcp-connect">Connect &amp; Verify GCP</button>
+            ${connGcp.connected ? `<button type="button" class="btn btn-secondary" id="btn-gcp-disconnect">Disconnect</button>` : ""}
+          </div>
+        </div>
+      </div>`;
+    rightCard = `
+      <div class="card">
+        <div class="card-header"><h3 class="card-title">GCP Session Identity</h3></div>
+        ${connGcp.connected
+      ? `
+          <div class="table-wrap" style="margin-bottom:14px">
+            <table><tbody>
+              <tr><th>Verified Principal</th><td class="mono">${esc(gid.principal)}</td></tr>
+              <tr><th>Project ID</th><td class="mono">${esc(gid.project_id || "-")}</td></tr>
+              <tr><th>Organization ID</th><td class="mono">${esc(gid.organization_id || "-")}</td></tr>
+              <tr><th>Effective Scope</th><td>${esc(gid.effective_scope)} (${esc(gid.verified_via)})</td></tr>
+              <tr><th>Accessible Projects</th><td class="mono">${esc(gid.projects_accessible || 0)}</td></tr>
+            </tbody></table>
+          </div>
+          <div class="row-flex">
+            <button type="button" class="btn btn-secondary" data-goto="logs">Pull GCP Cloud Audit SIEM Logs →</button>
+            <button type="button" class="btn btn-secondary" data-goto="lab">GCP Asset Census →</button>
+          </div>`
+      : `<div class="muted-text" style="padding:18px 0">GCP is not connected. Choose local gcloud/ADC, impersonation, SA JSON, Workload Identity, or OAuth token and verify.</div>`
+    }
+      </div>`;
+  } else {
+    const aid = connAz.identity || {};
+    leftCard = `
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Connect Microsoft Azure / Entra ID</h3>
+          <span class="badge ${connAz.connected ? "ok" : "warn"}">${connAz.connected ? "Connected" : "Disconnected"}</span>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Authentication Method</label>
+            <select id="az-conn-mode">
+              <option value="az_cli" ${STATE.azureConnMode === "az_cli" ? "selected" : ""}>Local Azure CLI (az login · ARM + Graph)</option>
+              <option value="service_principal" ${STATE.azureConnMode === "service_principal" ? "selected" : ""}>Entra App Service Principal (Client Secret in RAM)</option>
+              <option value="oidc_federated" ${STATE.azureConnMode === "oidc_federated" ? "selected" : ""}>Entra Workload Identity / OIDC Client Assertion</option>
+              <option value="managed_identity" ${STATE.azureConnMode === "managed_identity" ? "selected" : ""}>Azure Managed Identity (Hosted VM / AKS)</option>
+              <option value="in_memory_token" ${STATE.azureConnMode === "in_memory_token" ? "selected" : ""}>ARM / Entra Bearer Token(s) (Session RAM Only)</option>
+            </select>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Scope</label>
+              <select id="az-scope">
+                <option value="single_subscription" ${descAz.scope === "single_subscription" ? "selected" : ""}>Single Subscription / User</option>
+                <option value="organization" ${descAz.scope === "organization" ? "selected" : ""}>Whole Entra Tenant / Management Group Org</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Azure Location</label>
+              ${comboHtml("az-location", descAz.location || "eastus", AZURE_LOCATIONS, { mono: true })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Subscription ID (Optional for az_cli/org)</label>
+              ${comboHtml("az-sub-id", descAz.subscription_id || "", azSubs, { mono: true, placeholder: "00000000-0000-0000-0000-000000000000" })}
+            </div>
+            <div class="field">
+              <label>Management Group ID (For Org SIEM)</label>
+              <input class="mono" id="az-mg-id" value="${esc(descAz.management_group_id || "")}" placeholder="Optional org-root-mg" />
+            </div>
+          </div>
+          ${STATE.azureConnMode === "az_cli"
+      ? `<div class="notice info">Reads live ARM &amp; Microsoft Graph tokens directly from your signed-in Azure CLI ('az') without touching disk secrets.</div>`
+      : STATE.azureConnMode === "service_principal"
+        ? `
+          <div class="grid grid-2">
+            <div class="field"><label>Entra Tenant ID</label><input class="mono" id="az-tenant-id" value="${esc(descAz.tenant_id || "")}" placeholder="tenant-guid" /></div>
+            <div class="field"><label>App Client ID</label><input class="mono" id="az-client-id" value="${esc(descAz.client_id || "")}" placeholder="client-guid" /></div>
+          </div>
+          <div class="field"><label>Client Secret (RAM Only)</label><input class="mono" type="password" id="az-client-secret" /></div>`
+        : STATE.azureConnMode === "oidc_federated"
+          ? `
+            <div class="grid grid-2">
+              <div class="field"><label>Entra Tenant ID</label><input class="mono" id="az-tenant-id" value="${esc(descAz.tenant_id || "")}" /></div>
+              <div class="field"><label>App Client ID</label><input class="mono" id="az-client-id" value="${esc(descAz.client_id || "")}" /></div>
+            </div>
+            <div class="field"><label>Federated OIDC JWT Assertion (RAM Only)</label><input class="mono" type="password" id="az-fed-token" /></div>`
+          : STATE.azureConnMode === "managed_identity"
+            ? `<div class="field"><label>User-Assigned Client ID (Optional)</label><input class="mono" id="az-client-id" value="${esc(descAz.client_id || "")}" placeholder="Leave blank for system-assigned IMDS" /></div>`
+            : `
+              <div class="notice warn">Bearer tokens stay in backend memory only and are verified live against Azure ARM.</div>
+              <div class="field"><label>Azure ARM Access Token (management.azure.com)</label><input class="mono" type="password" id="az-token" /></div>
+              <div class="field"><label>Entra Microsoft Graph Token (Optional · AuditLog.Read.All)</label><input class="mono" type="password" id="az-graph-token" /></div>`
+    }
+          <div class="row-flex" style="margin-top:4px">
+            <button type="button" class="btn btn-primary" id="btn-az-connect">Connect &amp; Verify Azure</button>
+            ${connAz.connected ? `<button type="button" class="btn btn-secondary" id="btn-az-disconnect">Disconnect</button>` : ""}
+          </div>
+        </div>
+      </div>`;
+    rightCard = `
+      <div class="card">
+        <div class="card-header"><h3 class="card-title">Azure &amp; Entra Session Identity</h3></div>
+        ${connAz.connected
+      ? `
+          <div class="table-wrap" style="margin-bottom:14px">
+            <table><tbody>
+              <tr><th>Verified Principal</th><td class="mono">${esc(aid.principal)}</td></tr>
+              <tr><th>Tenant ID</th><td class="mono">${esc(aid.tenant_id || "-")}</td></tr>
+              <tr><th>Subscription ID</th><td class="mono">${esc(aid.subscription_id || "-")}</td></tr>
+              <tr><th>Effective Scope</th><td>${esc(aid.effective_scope)}</td></tr>
+              <tr><th>Subscriptions / MGs</th><td class="mono">${esc(aid.subscriptions_accessible || 0)} subs · ${esc(aid.management_groups_accessible || 0)} MGs</td></tr>
+              <tr><th>Entra Graph Logs</th><td><span class="badge ${aid.has_graph_token ? "ok" : "warn"}">${aid.has_graph_token ? "Enabled" : "ARM Only"}</span></td></tr>
+            </tbody></table>
+          </div>
+          <div class="row-flex">
+            <button type="button" class="btn btn-secondary" data-goto="logs">Pull Azure Activity &amp; Entra Logs →</button>
+            <button type="button" class="btn btn-secondary" data-goto="lab">Azure Asset Census →</button>
+          </div>`
+      : `<div class="muted-text" style="padding:18px 0">Azure is not connected. Choose Azure CLI, Entra Service Principal, OIDC Federated, Managed Identity, or ARM Bearer Token and verify.</div>`
+    }
+      </div>`;
+  }
+
+  root.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="space-between">
+        <div class="subtabs" style="margin-bottom:0;border:none">
+          <button type="button" class="subtab ${activeCloud === "aws" ? "active" : ""}" data-conn-cloud="aws">Amazon AWS <span class="badge ${connAws.connected ? "ok" : ""}">${connAws.connected ? "On" : "Off"}</span></button>
+          <button type="button" class="subtab ${activeCloud === "gcp" ? "active" : ""}" data-conn-cloud="gcp">Google Cloud (GCP) <span class="badge ${connGcp.connected ? "ok" : ""}">${connGcp.connected ? "On" : "Off"}</span></button>
+          <button type="button" class="subtab ${activeCloud === "azure" ? "active" : ""}" data-conn-cloud="azure">Microsoft Azure / Entra <span class="badge ${connAz.connected ? "ok" : ""}">${connAz.connected ? "On" : "Off"}</span></button>
+        </div>
+        <span class="small-text">All credentials verified live and kept strictly in RAM (never written to SQLite).</span>
       </div>
     </div>
 
+    <div class="grid grid-2">
+      ${leftCard}
+      ${rightCard}
+    </div>
+
     <details class="fold section-gap">
-      <summary>Database &amp; Archive (${db.linked_custom_db ? "Custom" : "Local"} · ${sizeKb} KB)</summary>
+      <summary>Database &amp; Multi-Cloud SIEM Archive (${db.linked_custom_db ? "Custom" : "Local"} · ${sizeKb} KB)</summary>
       <div class="grid grid-2" style="gap:12px;margin-top:8px">
         <div class="field">
           <label>Database File Path</label>
@@ -932,11 +1174,22 @@ async function renderConnections(root) {
     ], { mono: true, type: "number" })}
         </div>
         <div class="field">
-          <label>S3 Archive Bucket (Optional)</label>
-          <input class="mono" id="stor-s3-bucket" value="${esc(stor.archive_s3_bucket || "")}" placeholder="my-org-telemetry" />
+          <label>AWS S3 Archive Bucket (Optional)</label>
+          <input class="mono" id="stor-s3-bucket" value="${esc(stor.archive_s3_bucket || "")}" placeholder="my-org-aws-siem" />
         </div>
         <div class="field">
-          <label>S3 Prefix</label>
+          <label>GCP GCS Archive Bucket (Optional)</label>
+          <input class="mono" id="stor-gcs-bucket" value="${esc(stor.archive_gcs_bucket || "")}" placeholder="my-org-gcp-siem" />
+        </div>
+        <div class="field">
+          <label>Azure Storage Account / Container (Optional)</label>
+          <div class="grid grid-2">
+            <input class="mono" id="stor-az-account" value="${esc(stor.archive_azure_account || "")}" placeholder="storageaccount" />
+            <input class="mono" id="stor-az-container" value="${esc(stor.archive_azure_container || "")}" placeholder="siem-archive" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Object Prefix</label>
           <input class="mono" id="stor-s3-prefix" value="${esc(stor.archive_s3_prefix || "identity-shield-telemetry/")}" />
         </div>
       </div>
@@ -946,19 +1199,25 @@ async function renderConnections(root) {
         <div class="row-flex">
           <button type="button" class="btn btn-secondary btn-sm" id="btn-stor-export">Export JSONL</button>
           <button type="button" class="btn btn-secondary btn-sm" id="btn-stor-archive">Archive S3</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-stor-archive-gcs">Archive GCS</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-stor-archive-az">Archive Azure Blob</button>
           <button type="button" class="btn btn-primary btn-sm" id="btn-stor-save">Link &amp; Save</button>
         </div>
       </div>
     </details>
 
     <details class="fold section-gap">
-      <summary>IAM Setup Templates (Terraform)</summary>
+      <summary>Cloud Onboarding &amp; Least-Privilege Templates (AWS / GCP / Azure)</summary>
       <div class="row-flex" style="margin-bottom:12px">
-        <div class="field" style="width:220px">
+        <div class="field" style="width:280px">
           <label>Deployment Template</label>
           <select id="tpl-select">
-            <option value="single-account" ${STATE.templateTab === "single-account" ? "selected" : ""}>Single Account</option>
-            <option value="organization" ${STATE.templateTab === "organization" ? "selected" : ""}>AWS Organization</option>
+            <option value="single-account" ${STATE.templateTab === "single-account" ? "selected" : ""}>AWS — Single Account (Terraform)</option>
+            <option value="organization" ${STATE.templateTab === "organization" ? "selected" : ""}>AWS — Organization (Terraform)</option>
+            <option value="gcp-single" ${STATE.templateTab === "gcp-single" ? "selected" : ""}>GCP — Single Project (gcloud / SIEM SA)</option>
+            <option value="gcp-organization" ${STATE.templateTab === "gcp-organization" ? "selected" : ""}>GCP — Whole Organization (Org Viewer)</option>
+            <option value="azure-single" ${STATE.templateTab === "azure-single" ? "selected" : ""}>Azure — Single Subscription (az / Reader)</option>
+            <option value="azure-organization" ${STATE.templateTab === "azure-organization" ? "selected" : ""}>Azure — Whole Entra Tenant / Mgmt Group</option>
           </select>
         </div>
       </div>
@@ -966,13 +1225,16 @@ async function renderConnections(root) {
     </details>
   `;
 
-  document.getElementById("conn-mode").onchange = (e) => {
-    STATE.connMode = e.target.value;
-    renderConnections(root).then(() => {
-      bindCombos(root);
-      bindNavigationClicks(root);
-    });
-  };
+  root.querySelectorAll("[data-conn-cloud]").forEach((btn) => {
+    btn.onclick = () => {
+      STATE.connCloud = btn.dataset.connCloud;
+      renderConnections(root).then(() => {
+        bindCombos(root);
+        bindNavigationClicks(root);
+      });
+    };
+  });
+
   document.getElementById("tpl-select").onchange = (e) => {
     STATE.templateTab = e.target.value;
     renderConnections(root).then(() => {
@@ -986,44 +1248,156 @@ async function renderConnections(root) {
       toast("Copied");
     };
   });
-  const btnConn = document.getElementById("btn-test-connect");
-  btnConn.onclick = async () => {
-    btnConn.disabled = true;
-    try {
-      const payload = {
-        auth_mode: STATE.connMode,
-        region: document.getElementById("conn-region").value.trim() || "eu-west-1",
-        scope: document.getElementById("conn-scope").value,
-      };
-      if (STATE.connMode === "profile") {
-        payload.profile_name = document.getElementById("conn-profile").value.trim();
-      } else if (STATE.connMode === "assume_role") {
-        payload.role_arn = document.getElementById("conn-role-arn").value.trim();
-        payload.external_id = document.getElementById("conn-external-id").value.trim();
-        payload.profile_name = document.getElementById("conn-profile").value.trim();
-      } else {
-        payload.access_key = document.getElementById("conn-ak").value.trim();
-        payload.secret_key = document.getElementById("conn-sk").value.trim();
-        payload.session_token = document.getElementById("conn-st").value.trim();
-      }
-      await api("/api/connect", { method: "POST", body: JSON.stringify(payload) });
-      await refreshGlobalState();
-      toast("AWS connected");
-      await renderCurrentView();
-    } catch (e) {
-      toast(e.message, "err");
-    } finally {
-      btnConn.disabled = false;
-    }
-  };
-  const btnDisc = document.getElementById("btn-disconnect");
-  if (btnDisc) {
-    btnDisc.onclick = async () => {
-      await api("/api/connect/disconnect", { method: "POST" });
-      await refreshGlobalState();
-      toast("Disconnected");
-      await renderCurrentView();
+
+  if (activeCloud === "aws") {
+    document.getElementById("conn-mode").onchange = (e) => {
+      STATE.connMode = e.target.value;
+      renderConnections(root).then(() => {
+        bindCombos(root);
+        bindNavigationClicks(root);
+      });
     };
+    const btnConn = document.getElementById("btn-test-connect");
+    btnConn.onclick = async () => {
+      btnConn.disabled = true;
+      try {
+        const payload = {
+          auth_mode: STATE.connMode,
+          region: document.getElementById("conn-region").value.trim() || "eu-west-1",
+          scope: document.getElementById("conn-scope").value,
+        };
+        if (STATE.connMode === "profile") {
+          payload.profile_name = document.getElementById("conn-profile").value.trim();
+        } else if (STATE.connMode === "assume_role") {
+          payload.role_arn = document.getElementById("conn-role-arn").value.trim();
+          payload.external_id = document.getElementById("conn-external-id").value.trim();
+          payload.profile_name = document.getElementById("conn-profile").value.trim();
+        } else if (STATE.connMode === "in_memory") {
+          payload.access_key = document.getElementById("conn-ak").value.trim();
+          payload.secret_key = document.getElementById("conn-sk").value.trim();
+          payload.session_token = document.getElementById("conn-st").value.trim();
+        }
+        await api("/api/connect", { method: "POST", body: JSON.stringify(payload) });
+        await refreshGlobalState();
+        toast("AWS connected");
+        await renderCurrentView();
+      } catch (e) {
+        toast(e.message, "err");
+      } finally {
+        btnConn.disabled = false;
+      }
+    };
+    const btnDisc = document.getElementById("btn-disconnect");
+    if (btnDisc) {
+      btnDisc.onclick = async () => {
+        await api("/api/connect/disconnect", { method: "POST" });
+        await refreshGlobalState();
+        toast("AWS disconnected");
+        await renderCurrentView();
+      };
+    }
+  } else if (activeCloud === "gcp") {
+    document.getElementById("gcp-conn-mode").onchange = (e) => {
+      STATE.gcpConnMode = e.target.value;
+      renderConnections(root).then(() => {
+        bindCombos(root);
+        bindNavigationClicks(root);
+      });
+    };
+    const btnGcp = document.getElementById("btn-gcp-connect");
+    btnGcp.onclick = async () => {
+      btnGcp.disabled = true;
+      try {
+        const payload = {
+          auth_mode: STATE.gcpConnMode,
+          scope: document.getElementById("gcp-scope").value,
+          region: document.getElementById("gcp-region").value.trim() || "us-central1",
+          project_id: document.getElementById("gcp-project-id").value.trim(),
+          organization_id: document.getElementById("gcp-org-id").value.trim(),
+        };
+        if (STATE.gcpConnMode === "gcloud_adc") {
+          payload.gcloud_config = document.getElementById("gcp-gcloud-cfg").value.trim();
+        } else if (STATE.gcpConnMode === "impersonate_sa") {
+          payload.service_account = document.getElementById("gcp-sa-email").value.trim();
+        } else if (STATE.gcpConnMode === "service_account_json") {
+          payload.service_account_json = document.getElementById("gcp-sa-json").value.trim();
+        } else if (STATE.gcpConnMode === "workload_identity") {
+          payload.audience = document.getElementById("gcp-wif-aud").value.trim();
+          payload.subject_token = document.getElementById("gcp-wif-tok").value.trim();
+        } else {
+          payload.access_token = document.getElementById("gcp-token").value.trim();
+        }
+        await api("/api/connect/gcp", { method: "POST", body: JSON.stringify(payload) });
+        await refreshGlobalState();
+        toast("GCP connected & verified");
+        await renderCurrentView();
+      } catch (e) {
+        toast(e.message, "err");
+      } finally {
+        btnGcp.disabled = false;
+      }
+    };
+    const btnGcpDisc = document.getElementById("btn-gcp-disconnect");
+    if (btnGcpDisc) {
+      btnGcpDisc.onclick = async () => {
+        await api("/api/connect/gcp/disconnect", { method: "POST" });
+        await refreshGlobalState();
+        toast("GCP disconnected");
+        await renderCurrentView();
+      };
+    }
+  } else {
+    document.getElementById("az-conn-mode").onchange = (e) => {
+      STATE.azureConnMode = e.target.value;
+      renderConnections(root).then(() => {
+        bindCombos(root);
+        bindNavigationClicks(root);
+      });
+    };
+    const btnAz = document.getElementById("btn-az-connect");
+    btnAz.onclick = async () => {
+      btnAz.disabled = true;
+      try {
+        const payload = {
+          auth_mode: STATE.azureConnMode,
+          scope: document.getElementById("az-scope").value,
+          location: document.getElementById("az-location").value.trim() || "eastus",
+          subscription_id: document.getElementById("az-sub-id").value.trim(),
+          management_group_id: document.getElementById("az-mg-id").value.trim(),
+        };
+        if (STATE.azureConnMode === "service_principal") {
+          payload.tenant_id = document.getElementById("az-tenant-id").value.trim();
+          payload.client_id = document.getElementById("az-client-id").value.trim();
+          payload.client_secret = document.getElementById("az-client-secret").value.trim();
+        } else if (STATE.azureConnMode === "oidc_federated") {
+          payload.tenant_id = document.getElementById("az-tenant-id").value.trim();
+          payload.client_id = document.getElementById("az-client-id").value.trim();
+          payload.federated_token = document.getElementById("az-fed-token").value.trim();
+        } else if (STATE.azureConnMode === "managed_identity") {
+          payload.client_id = document.getElementById("az-client-id").value.trim();
+        } else if (STATE.azureConnMode === "in_memory_token") {
+          payload.access_token = document.getElementById("az-token").value.trim();
+          payload.graph_token = document.getElementById("az-graph-token").value.trim();
+        }
+        await api("/api/connect/azure", { method: "POST", body: JSON.stringify(payload) });
+        await refreshGlobalState();
+        toast("Azure connected & verified");
+        await renderCurrentView();
+      } catch (e) {
+        toast(e.message, "err");
+      } finally {
+        btnAz.disabled = false;
+      }
+    };
+    const btnAzDisc = document.getElementById("btn-az-disconnect");
+    if (btnAzDisc) {
+      btnAzDisc.onclick = async () => {
+        await api("/api/connect/azure/disconnect", { method: "POST" });
+        await refreshGlobalState();
+        toast("Azure disconnected");
+        await renderCurrentView();
+      };
+    }
   }
 
   document.getElementById("btn-stor-save").onclick = async () => {
@@ -1034,6 +1408,9 @@ async function renderConnections(root) {
           db_path: document.getElementById("stor-db-path").value.trim(),
           max_proxy_events: Number(document.getElementById("stor-max-px").value || 0),
           archive_s3_bucket: document.getElementById("stor-s3-bucket").value.trim(),
+          archive_gcs_bucket: document.getElementById("stor-gcs-bucket").value.trim(),
+          archive_azure_account: document.getElementById("stor-az-account").value.trim(),
+          archive_azure_container: document.getElementById("stor-az-container").value.trim(),
           archive_s3_prefix: document.getElementById("stor-s3-prefix").value.trim() || "identity-shield-telemetry/",
         }),
       });
@@ -1052,11 +1429,43 @@ async function renderConnections(root) {
       const res = await api("/api/storage/archive", {
         method: "POST",
         body: JSON.stringify({
+          provider: "aws",
           bucket: document.getElementById("stor-s3-bucket").value.trim(),
           prefix: document.getElementById("stor-s3-prefix").value.trim(),
         }),
       });
       toast(`Archived ${res.records} records to ${res.s3_uri}`);
+    } catch (e) {
+      toast(e.message, "err");
+    }
+  };
+  document.getElementById("btn-stor-archive-gcs").onclick = async () => {
+    try {
+      const res = await api("/api/storage/archive", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "gcp",
+          bucket: document.getElementById("stor-gcs-bucket").value.trim(),
+          prefix: document.getElementById("stor-s3-prefix").value.trim(),
+        }),
+      });
+      toast(`Archived ${res.records} records to ${res.uri}`);
+    } catch (e) {
+      toast(e.message, "err");
+    }
+  };
+  document.getElementById("btn-stor-archive-az").onclick = async () => {
+    try {
+      const res = await api("/api/storage/archive", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "azure",
+          storage_account: document.getElementById("stor-az-account").value.trim(),
+          container: document.getElementById("stor-az-container").value.trim(),
+          prefix: document.getElementById("stor-s3-prefix").value.trim(),
+        }),
+      });
+      toast(`Archived ${res.records} records to Azure Blob`);
     } catch (e) {
       toast(e.message, "err");
     }
@@ -1143,6 +1552,7 @@ async function renderLab(root) {
           <h3 class="card-title">Target AWS Resources</h3>
           <div class="row-flex">
             <button type="button" class="btn btn-secondary btn-sm" id="btn-run-probe">Discover AWS</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-run-mc-census">Multi-Cloud Census</button>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor">Doctor</button>
           </div>
         </div>
@@ -1216,6 +1626,19 @@ async function renderLab(root) {
         </div>
       </div>
     </div>
+
+    ${STATE.mcCensusData
+      ? `
+      <div class="card section-gap">
+        <div class="card-header">
+          <h3 class="card-title">Connected Multi-Cloud Asset Census</h3>
+          <span class="badge ${STATE.mcCensusData.connected ? "ok" : "warn"}">${STATE.mcCensusData.connected ? Object.keys(STATE.mcCensusData.clouds || {}).join(", ").toUpperCase() : "Not Connected"}</span>
+        </div>
+        ${STATE.mcCensusData.error ? `<div class="notice warn">${esc(STATE.mcCensusData.error)}</div>` : `<pre class="terminal" style="max-height:260px">${esc(JSON.stringify(STATE.mcCensusData.clouds || {}, null, 2))}</pre>`}
+      </div>
+    `
+      : ""
+    }
 
     ${doc
       ? `
@@ -1314,6 +1737,19 @@ async function renderLab(root) {
     try {
       STATE.probeData = await api("/api/lab/census", { method: "POST" });
       toast(STATE.probeData.error ? STATE.probeData.error : "Resources discovered — check dropdowns", STATE.probeData.error ? "err" : "ok");
+      await renderCurrentView();
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+
+  document.getElementById("btn-run-mc-census").onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      STATE.mcCensusData = await api("/api/clouds/census", { method: "POST", body: JSON.stringify({ cloud_provider: "connected" }) });
+      toast(STATE.mcCensusData.error ? STATE.mcCensusData.error : "Multi-cloud asset census updated", STATE.mcCensusData.error ? "warn" : "ok");
       await renderCurrentView();
     } catch (err) {
       toast(err.message, "err");
@@ -3384,7 +3820,7 @@ async function renderLogs(root) {
     <div class="card">
       <div class="space-between" style="margin-bottom:14px">
         <div class="subtabs" style="margin-bottom:0;border:none">
-          <button type="button" class="subtab ${STATE.logsTab === "events" ? "active" : ""}" data-ltab="events">CloudTrail Events (${(d.events || []).length})</button>
+          <button type="button" class="subtab ${STATE.logsTab === "events" ? "active" : ""}" data-ltab="events">Cloud SIEM Events (${(d.events || []).length})</button>
           <button type="button" class="subtab ${STATE.logsTab === "trials" ? "active" : ""}" data-ltab="trials">Trials (${(d.trial_logs || []).length})</button>
           <button type="button" class="subtab ${STATE.logsTab === "jobs" ? "active" : ""}" data-ltab="jobs">Jobs (${(d.jobs || []).length})</button>
         </div>
@@ -3419,8 +3855,30 @@ async function renderLogs(root) {
 
       ${STATE.logsTab === "events"
       ? `
+        <div class="card" style="margin-bottom:12px;background:var(--surface-2,transparent);padding:12px">
+          <div class="space-between">
+            <div>
+              <strong>Live Cloud SIEM Collector (Connected Clouds)</strong>
+              <span class="small-text muted-text" style="margin-left:8px">Pulls CloudTrail, GCP Cloud Audit Logs, &amp; Azure Activity / Entra logs and evaluates detections automatically.</span>
+            </div>
+            <div class="row-flex">
+              <select id="log-pull-cloud" style="width:165px">
+                <option value="connected">All Connected Clouds</option>
+                <option value="aws">AWS CloudTrail</option>
+                <option value="gcp">GCP Cloud Audit Logs</option>
+                <option value="azure">Azure Activity &amp; Entra</option>
+              </select>
+              <select id="log-pull-hours" style="width:105px">
+                <option value="1">Last 1h</option>
+                <option value="24" selected>Last 24h</option>
+                <option value="168">Last 7d</option>
+              </select>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-pull-cloud-logs">Pull Live Cloud Logs</button>
+            </div>
+          </div>
+        </div>
         <details class="fold" style="margin-bottom:12px">
-          <summary>Ingest Audit Logs (AWS CloudTrail, GCP Audit, Azure Activity / Entra JSON)</summary>
+          <summary>Or Paste / Ingest JSON Logs Manually (AWS CloudTrail, GCP Audit, Azure Activity / Entra JSON)</summary>
           <div class="form-grid" style="margin-top:8px">
             <textarea id="log-ingest-json" rows="3" placeholder='Paste CloudTrail Records, GCP Audit entries, or Azure Activity / Entra JSON...'></textarea>
             <div class="space-between">
@@ -3483,6 +3941,26 @@ async function renderLogs(root) {
     document.getElementById("btn-filter-logs").onclick = applyFilter;
     document.getElementById("log-search").onkeydown = (e) => {
       if (e.key === "Enter") applyFilter();
+    };
+    document.getElementById("btn-pull-cloud-logs").onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        const res = await api("/api/clouds/pull", {
+          method: "POST",
+          body: JSON.stringify({
+            cloud_provider: document.getElementById("log-pull-cloud").value,
+            hours: Number(document.getElementById("log-pull-hours").value || 24),
+            replay_rules: true,
+          }),
+        });
+        await refreshGlobalState();
+        toast(`Pulled ${res.total_ingested} cloud SIEM events (${(res.clouds_queried || []).join(", ")})`);
+        await renderCurrentView();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        e.target.disabled = false;
+      }
     };
     document.getElementById("btn-ingest-logs").onclick = async () => {
       const txt = document.getElementById("log-ingest-json").value.trim();

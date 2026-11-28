@@ -114,7 +114,7 @@ def _ssrf_block_reason(
 
 
 class _ProxyHTTPServer(ThreadingHTTPServer):
-    allow_reuse_address = True
+    allow_reuse_address = os.name != "nt"
     daemon_threads = True
 
     def __init__(self, server_address, RequestHandlerClass, runtime: "LiveSecurityProxy"):
@@ -171,6 +171,7 @@ class LiveSecurityProxy:
         db_path: Path | None = None,
         host: str | None = None,
         port: int | None = None,
+        persist_config: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if self._server is not None:
@@ -187,7 +188,8 @@ class LiveSecurityProxy:
             self._server = server
             self._started_at = dynamic._utc_now()
             actual_port = int(server.server_address[1])
-            settings.update_proxy_config({"host": bind_host, "port": actual_port})
+            if persist_config:
+                settings.update_proxy_config({"host": bind_host, "port": actual_port})
 
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             self._thread = thread

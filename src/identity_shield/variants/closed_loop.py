@@ -1087,19 +1087,27 @@ def _http_variants_for_vector(vector: Mapping[str, Any]) -> list[dict[str, Any]]
             "user_agent": "Boto3/1.35.0 Python/3.12.7",
         },
         {
-            "variant_label": "spoofed_terraform_ua",
-            "factor_note": "client_tool -> terraform",
+            "variant_label": "double_encoded_path",
+            "factor_note": "api_form -> multi-layer URL percent-encoding",
             "method": method,
             "host": host,
-            "path": raw_path,
-            "user_agent": "HashiCorp-Terraform/1.9.8",
+            "path": (
+                raw_path.replace("../", "%252e%252e%252f").replace(".env", ".%2565nv")
+                if ("../" in raw_path or ".env" in raw_path)
+                else raw_path.replace("/", "/%2e%2e/../", 1)
+            ),
+            "user_agent": base_ua,
         },
         {
-            "variant_label": "double_encoded_path",
-            "factor_note": "api_form -> URL percent-encoding",
+            "variant_label": "slash_matrix_obfuscation",
+            "factor_note": "api_form -> .//./ slash collapse + ; matrix param",
             "method": method,
             "host": host,
-            "path": raw_path.replace("../", "%2e%2e%2f").replace(".env", ".%65nv"),
+            "path": (
+                raw_path.replace("/.env", "/.//./.env;v=1").replace("../", "..//").replace("/etc/passwd", "/..;/..;/etc/passwd")
+                if any(tok in raw_path for tok in ("/.env", "../", "/etc/passwd"))
+                else f"/.//{raw_path.lstrip('/')}"
+            ),
             "user_agent": base_ua,
         },
         {

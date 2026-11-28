@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -26,6 +26,7 @@ import yaml
 
 from identity_shield import config, settings
 from identity_shield.analysis import outcomes
+from identity_shield.clouds import connect as cloud_connect
 from identity_shield.contracts import VISIBLE_SETS, read_variants, write_json, write_variants
 from identity_shield.db.connection import connect
 from identity_shield.db.init import ensure_tables, init_db
@@ -204,6 +205,8 @@ def _build_boto_session(
 
     if auth_mode == "profile":
         return boto3.Session(profile_name=profile_name or None, region_name=region)
+    if auth_mode == "env_default":
+        return boto3.Session(region_name=region)
     if auth_mode == "assume_role":
         if not role_arn:
             raise ValueError("Role ARN is required for STS AssumeRole")
@@ -283,8 +286,53 @@ def connect_aws(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def disconnect_aws() -> dict[str, Any]:
-    settings.RUNTIME_SESSION.clear()
+    settings.RUNTIME_SESSION.clear("aws")
     return settings.RUNTIME_SESSION.status()
+
+
+def list_local_cloud_profiles() -> dict[str, Any]:
+    return {
+        "aws": list_local_aws_profiles(),
+        "gcp": cloud_connect.list_local_gcp_configurations(),
+        "azure": cloud_connect.list_local_azure_subscriptions(),
+    }
+
+
+def connect_gcp(payload: Mapping[str, Any]) -> dict[str, Any]:
+    verified = cloud_connect.verify_and_connect_gcp(payload)
+    desc = settings.update_gcp_connection_descriptor(verified["descriptor"]).to_dict()
+    settings.RUNTIME_SESSION.set_cloud_connection(
+        "gcp",
+        descriptor=desc,
+        identity=verified["identity"],
+        material={"access_token": verified["access_token"]},
+    )
+    return settings.RUNTIME_SESSION.provider_status("gcp")
+
+
+def disconnect_gcp() -> dict[str, Any]:
+    settings.RUNTIME_SESSION.clear("gcp")
+    return settings.RUNTIME_SESSION.provider_status("gcp")
+
+
+def connect_azure(payload: Mapping[str, Any]) -> dict[str, Any]:
+    verified = cloud_connect.verify_and_connect_azure(payload)
+    desc = settings.update_azure_connection_descriptor(verified["descriptor"]).to_dict()
+    settings.RUNTIME_SESSION.set_cloud_connection(
+        "azure",
+        descriptor=desc,
+        identity=verified["identity"],
+        material={
+            "access_token": verified["access_token"],
+            "graph_token": verified.get("graph_token") or "",
+        },
+    )
+    return settings.RUNTIME_SESSION.provider_status("azure")
+
+
+def disconnect_azure() -> dict[str, Any]:
+    settings.RUNTIME_SESSION.clear("azure")
+    return settings.RUNTIME_SESSION.provider_status("azure")
 
 
 def resolve_sessions(region_override: str | None = None) -> tuple[GuardedSession, LabSession, str, str | None]:
@@ -327,7 +375,7 @@ def resolve_sessions(region_override: str | None = None) -> tuple[GuardedSession
 
 
 def customer_onboarding_templates() -> dict[str, Any]:
-    """Read real customer deployment templates for GUI onboarding wizard."""
+    """Read AWS Terraform + GCP/Azure least-privilege onboarding templates for GUI."""
     templates: dict[str, Any] = {}
     for mode in ("single-account", "organization"):
         folder = config.INFRA / "customer" / mode
@@ -336,7 +384,8 @@ def customer_onboarding_templates() -> dict[str, Any]:
             for file in sorted(folder.iterdir()):
                 if file.is_file():
                     files[file.name] = file.read_text(encoding="utf-8")
-        templates[mode] = {"path": str(folder), "files": files}
+        templates[mode] = {"cloud": "aws", "path": str(folder), "files": files}
+    templates.update(cloud_connect.multicloud_onboarding_templates())
     return templates
 
 
@@ -1495,7 +1544,7 @@ def execute_cli_command(raw_command: str, *, db_path: Path | None = None) -> dic
         "analyse": {"summary", "misses", "diff", "report"},
         "attacks": {"list", "show", "add", "enable", "disable", "remove"},
         "config": {"export"},
-        "logs": {"events", "ingest", "trials"},
+        "logs": {"events", "ingest", "pull", "trials"},
         "proxy": {"status", "events", "simulate", "clear"},
         "dynamic": {
             "list",
@@ -1672,7 +1721,7 @@ def simulate_proxy_traffic(
 ) -> dict[str, Any]:
     path = ensure_database(db_path)
     was_running = PROXY_RUNTIME.is_running()
-    status = PROXY_RUNTIME.start(db_path=path) if not was_running else PROXY_RUNTIME.status()
+    status = PROXY_RUNTIME.start(db_path=path, port=0, persist_config=False) if not was_running else PROXY_RUNTIME.status()
     sent = proxy_simulator.send_sample_traffic(
         host=status["host"],
         port=int(status["port"]),
@@ -1978,12 +2027,67 @@ def archive_telemetry_to_s3(
     )
     return {
         "archived": True,
+        "provider": "aws",
         "bucket": target_bucket,
         "key": key,
         "s3_uri": f"s3://{target_bucket}/{key}",
         "records": export["records"],
         "bytes": len(export["jsonl"].encode("utf-8")),
     }
+
+
+def archive_telemetry_to_cloud(
+    payload: Mapping[str, Any],
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    provider = str(payload.get("provider") or "aws").strip().lower()
+    if provider == "aws":
+        return archive_telemetry_to_s3(
+            db_path=db_path,
+            bucket=payload.get("bucket") or None,
+            prefix=payload.get("prefix") or None,
+        )
+
+    storage = settings.get_storage_config()
+    export = export_telemetry_jsonl(db_path=db_path)
+    clean_prefix = str(payload.get("prefix") or storage.archive_s3_prefix or "identity-shield-telemetry/").strip()
+    if clean_prefix and not clean_prefix.endswith("/"):
+        clean_prefix += "/"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    obj_name = f"{clean_prefix}telemetry-{stamp}.jsonl"
+    content_bytes = export["jsonl"].encode("utf-8")
+
+    if provider == "gcp":
+        mat = settings.RUNTIME_SESSION.get_provider_material("gcp") or {}
+        token = str(mat.get("access_token") or "")
+        if not token:
+            raise RuntimeError("Connect GCP first before archiving telemetry to GCS")
+        bucket = str(payload.get("bucket") or storage.archive_gcs_bucket or "").strip()
+        if not bucket:
+            raise ValueError("Archive GCS bucket name is required")
+        res = cloud_connect.upload_archive_gcs(access_token=token, bucket=bucket, object_name=obj_name, content=content_bytes)
+        return {**res, "records": export["records"], "bytes": len(content_bytes)}
+
+    if provider == "azure":
+        mat = settings.RUNTIME_SESSION.get_provider_material("azure") or {}
+        token = str(mat.get("access_token") or "")
+        if not token:
+            raise RuntimeError("Connect Azure first before archiving telemetry to Azure Blob")
+        account = str(payload.get("storage_account") or storage.archive_azure_account or "").strip()
+        container = str(payload.get("container") or storage.archive_azure_container or "").strip()
+        if not account or not container:
+            raise ValueError("Azure storage_account and container are required")
+        res = cloud_connect.upload_archive_azure_blob(
+            arm_or_storage_token=token,
+            storage_account=account,
+            container=container,
+            blob_name=obj_name,
+            content=content_bytes,
+        )
+        return {**res, "records": export["records"], "bytes": len(content_bytes)}
+
+    raise ValueError(f"Unsupported archive cloud provider: {provider!r}")
 
 
 def external_tools_status_service() -> dict[str, Any]:
@@ -2197,6 +2301,171 @@ def ingest_cloud_logs_service(
     finally:
         conn.close()
     return {"ok": True, **res}
+
+
+def pull_cloud_siem_logs_service(
+    payload: Mapping[str, Any] | None = None,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Pull live audit telemetry from connected AWS, GCP, and/or Azure accounts and run SIEM replay."""
+    req = dict(payload or {})
+    target = str(req.get("cloud_provider") or "connected").strip().lower()
+    if target not in {"connected", "all", "aws", "gcp", "azure"}:
+        raise ValueError("cloud_provider must be one of: connected, all, aws, gcp, azure")
+    hours = max(1, min(int(req.get("hours") or 24), 168))
+    limit = max(1, min(int(req.get("limit") or 100), 200))
+    run_detection = bool(req.get("replay_rules", True))
+
+    statuses = settings.RUNTIME_SESSION.all_statuses()
+    if target in {"connected", "all"}:
+        targets = [p for p in ("aws", "gcp", "azure") if statuses[p].get("connected")]
+        if not targets:
+            raise RuntimeError("No cloud provider is connected yet. Connect AWS, GCP, or Azure first.")
+    else:
+        if not statuses[target].get("connected"):
+            raise RuntimeError(f"{target.upper()} is not connected. Connect {target.upper()} in Connections first.")
+        targets = [target]
+
+    path = ensure_database(db_path)
+    conn = connect(path)
+    by_cloud: dict[str, int] = {}
+    pulled_raw: dict[str, int] = {}
+    errors: list[str] = []
+    try:
+        for cp in targets:
+            try:
+                if cp == "aws":
+                    boto_sess = settings.RUNTIME_SESSION.boto_session()
+                    if boto_sess is None:
+                        raise RuntimeError("AWS session missing")
+                    region = str((statuses["aws"].get("descriptor") or {}).get("region") or "eu-west-1")
+                    ct = boto_sess.client("cloudtrail", region_name=region)
+                    start_dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+                    kwargs: dict[str, Any] = {"MaxResults": min(limit, 50), "StartTime": start_dt}
+                    resp = ct.lookup_events(**kwargs)
+                    raw_events = []
+                    for item in resp.get("Events") or []:
+                        ct_json = item.get("CloudTrailEvent")
+                        if ct_json:
+                            ev = json.loads(ct_json)
+                            ev.setdefault("cloudProvider", "aws")
+                            raw_events.append(ev)
+                    pulled_raw["aws"] = len(raw_events)
+                    if raw_events:
+                        ing = detect_loader.ingest_audit_payload(conn, raw_events, cloud_provider="aws")
+                        by_cloud["aws"] = int(ing.get("ingested") or 0)
+                    else:
+                        by_cloud["aws"] = 0
+                elif cp == "gcp":
+                    mat = settings.RUNTIME_SESSION.get_provider_material("gcp") or {}
+                    desc = statuses["gcp"].get("descriptor") or {}
+                    events = cloud_connect.pull_gcp_audit_logs(
+                        access_token=str(mat.get("access_token") or ""),
+                        project_id=str(desc.get("project_id") or ""),
+                        organization_id=str(desc.get("organization_id") or ""),
+                        scope=str(desc.get("scope") or "single_project"),
+                        hours=hours,
+                        limit=limit,
+                    )
+                    pulled_raw["gcp"] = len(events)
+                    if events:
+                        ing = detect_loader.ingest_audit_payload(conn, events, cloud_provider="gcp")
+                        by_cloud["gcp"] = int(ing.get("ingested") or 0)
+                    else:
+                        by_cloud["gcp"] = 0
+                elif cp == "azure":
+                    mat = settings.RUNTIME_SESSION.get_provider_material("azure") or {}
+                    desc = statuses["azure"].get("descriptor") or {}
+                    ident = statuses["azure"].get("identity") or {}
+                    sub_ids = [str(s.get("subscription_id")) for s in (ident.get("subscriptions") or []) if s.get("subscription_id")]
+                    events = cloud_connect.pull_azure_siem_logs(
+                        arm_token=str(mat.get("access_token") or ""),
+                        graph_token=str(mat.get("graph_token") or ""),
+                        subscription_id=str(desc.get("subscription_id") or ""),
+                        subscription_ids=sub_ids if desc.get("scope") == "organization" else None,
+                        hours=hours,
+                        limit=limit,
+                    )
+                    pulled_raw["azure"] = len(events)
+                    if events:
+                        ing = detect_loader.ingest_audit_payload(conn, events, cloud_provider="azure")
+                        by_cloud["azure"] = int(ing.get("ingested") or 0)
+                    else:
+                        by_cloud["azure"] = 0
+            except Exception as exc:
+                errors.append(f"{cp}: {exc}")
+
+        replay_stats: dict[str, Any] = {}
+        dynamic_stats: dict[str, Any] = {}
+        if run_detection and sum(by_cloud.values()) > 0:
+            avail = detect_replay.load_ruleset_config()
+            for rs_name in ("multicloud-v1", "enhanced-v1", "custom-v1"):
+                if rs_name in avail:
+                    loaded = detect_replay.load_ruleset(conn, rs_name)
+                    rep = detect_replay.run_replay(conn, loaded)
+                    replay_stats[rs_name] = int(rep.get("alerts") or 0)
+            dynamic_stats = detect_dynamic.run_dynamic_replay(conn)
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "clouds_queried": targets,
+        "pulled_raw": pulled_raw,
+        "ingested_by_cloud": by_cloud,
+        "total_ingested": sum(by_cloud.values()),
+        "replay_stats": replay_stats,
+        "dynamic_stats": dynamic_stats,
+        "errors": errors,
+    }
+
+
+def run_multicloud_census_service(cloud_provider: str = "connected") -> dict[str, Any]:
+    """Run live read-only asset census for connected AWS, GCP, and/or Azure accounts/organizations."""
+    from identity_shield.variants.closed_loop import save_multicloud_inventory
+
+    target = str(cloud_provider or "connected").strip().lower()
+    statuses = settings.RUNTIME_SESSION.all_statuses()
+    if target in {"connected", "all"}:
+        targets = [p for p in ("aws", "gcp", "azure") if statuses[p].get("connected")]
+    else:
+        if target not in {"aws", "gcp", "azure"}:
+            raise ValueError("cloud_provider must be one of: connected, all, aws, gcp, azure")
+        if not statuses[target].get("connected"):
+            raise RuntimeError(f"{target.upper()} is not connected yet.")
+        targets = [target]
+
+    if not targets:
+        return {"connected": False, "clouds": {}, "error": "Connect at least one cloud provider (AWS, GCP, or Azure) first."}
+
+    results: dict[str, Any] = {}
+    for cp in targets:
+        if cp == "aws":
+            results["aws"] = run_live_resource_probe()
+        elif cp == "gcp":
+            mat = settings.RUNTIME_SESSION.get_provider_material("gcp") or {}
+            desc = statuses["gcp"].get("descriptor") or {}
+            ident = statuses["gcp"].get("identity") or {}
+            proj = str(desc.get("project_id") or "")
+            if not proj and ident.get("projects"):
+                proj = str(ident["projects"][0].get("project_id") or "")
+            inv = cloud_connect.collect_gcp_census(access_token=str(mat.get("access_token") or ""), project_id=proj)
+            save_multicloud_inventory(inv)
+            results["gcp"] = inv
+        elif cp == "azure":
+            mat = settings.RUNTIME_SESSION.get_provider_material("azure") or {}
+            desc = statuses["azure"].get("descriptor") or {}
+            sub = str(desc.get("subscription_id") or "")
+            inv = cloud_connect.collect_azure_census(
+                arm_token=str(mat.get("access_token") or ""),
+                subscription_id=sub,
+                tenant_id=str(desc.get("tenant_id") or ""),
+            )
+            save_multicloud_inventory(inv)
+            results["azure"] = inv
+
+    return {"connected": True, "clouds": results}
 
 
 def import_scoutsuite_service(payload: Mapping[str, Any]) -> dict[str, Any]:

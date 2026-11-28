@@ -904,3 +904,250 @@ def test_multicloud_bugfixes_enhancer_scoping_and_normalizers(mc_env):
         assert az_au_norm[0].operation == "Add service principal credentials"
     finally:
         conn.close()
+
+
+def _der_len(data: bytes) -> bytes:
+    ln = len(data)
+    if ln < 0x80:
+        return bytes([ln])
+    raw = ln.to_bytes((ln.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def _der_tlv(tag: int, body: bytes) -> bytes:
+    return bytes([tag]) + _der_len(body) + body
+
+
+def _der_int(val: int) -> bytes:
+    raw = val.to_bytes(max(1, (val.bit_length() + 8) // 8), "big")
+    return _der_tlv(0x02, raw)
+
+
+def test_multicloud_live_connections_siem_pull_and_census(mc_env, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    from identity_shield import service
+    from identity_shield.clouds import connect as cloud_connect
+
+    settings.RUNTIME_SESSION.clear()
+    try:
+        # 1. Construct a synthetic RSA PKCS#8 key in RAM (no PEM literal in repo) and verify in-RAM RS256 signing
+        p = 0xD7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7E9D3
+        q = 0xE1F3A5B7C9D1E3F5A7B9C1D3E5F7A9B1C3D5E7F9A1B3C5D7E9F1A3B5C7D9E1F3A5B7C9D1E3F5A7B9C1D3E5F7A9B1C3E7
+        n = p * q
+        e = 65537
+        # Use fixed d for deterministic PKCS#8 structure check (k >= 64 bytes -> ps_len >= 8)
+        d = 0x123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF1
+        rsa_seq = _der_tlv(0x30, _der_int(0) + _der_int(n) + _der_int(e) + _der_int(d))
+        alg_seq = _der_tlv(0x30, b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01\x05\x00")
+        pkcs8 = _der_tlv(0x30, _der_int(0) + alg_seq + _der_tlv(0x04, rsa_seq))
+        b64 = base64.b64encode(pkcs8).decode("ascii")
+        syn_pem = "\n".join(["-----BEGIN " + "PRIVATE KEY-----", b64, "-----END " + "PRIVATE KEY-----"])
+        jwt_tok = cloud_connect.sign_rs256_jwt_in_memory({"iss": "sa@test-proj.iam.gserviceaccount.com"}, syn_pem)
+        assert len(jwt_tok.split(".")) == 3
+
+        # 2. Mock outbound cloud HTTP + CLI binaries across GCP and Azure auth, SIEM log pull & census
+        az_claims = base64.urlsafe_b64encode(
+            json.dumps({"tid": "tenant-org-1", "upn": "secops@contoso.com", "appid": "app-001"}).encode("utf-8")
+        ).rstrip(b"=").decode("ascii")
+        az_jwt = f"hdr.{az_claims}.sig"
+
+        def fake_which(name: str):
+            return f"/usr/bin/{name}" if name in {"gcloud", "az"} else None
+
+        def fake_run(cmd, **kwargs):
+            s = " ".join(str(x) for x in cmd)
+            if "gcloud" in s and "print-access-token" in s:
+                return SimpleNamespace(returncode=0, stdout="gcp-cli-tok-secret\n", stderr="")
+            if "gcloud" in s and "get-value project" in s:
+                return SimpleNamespace(returncode=0, stdout="gcp-org-proj\n", stderr="")
+            if "gcloud" in s and "get-value account" in s:
+                return SimpleNamespace(returncode=0, stdout="admin@example.com\n", stderr="")
+            if "gcloud" in s and "configurations list" in s:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"name": "default", "is_active": True, "properties": {"core": {"account": "admin@example.com", "project": "gcp-org-proj"}}}]), stderr="")
+            if "az" in s and "ms-graph" in s:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"accessToken": "az-graph-tok-secret"}), stderr="")
+            if "az" in s and "get-access-token" in s:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"accessToken": az_jwt, "tenant": "tenant-org-1", "subscription": "sub-101"}), stderr="")
+            if "az" in s and "account show" in s:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "sub-101", "name": "Prod Sub", "tenantId": "tenant-org-1", "user": {"name": "secops@contoso.com"}}), stderr="")
+            if "az" in s and "account list" in s:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"id": "sub-101", "name": "Prod Sub", "tenantId": "tenant-org-1", "isDefault": True, "state": "Enabled"}]), stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="unrecognized")
+
+        def fake_http(method: str, url: str, headers, body: bytes | None = None):
+            if "iamcredentials.googleapis.com" in url:
+                return 200, {"accessToken": "gcp-imp-tok-secret", "expireTime": "2026-11-28T12:00:00Z"}
+            if "oauth2.googleapis.com/tokeninfo" in url:
+                return 200, {"email": "siem@gcp-org-proj.iam.gserviceaccount.com", "scope": "https://www.googleapis.com/auth/cloud-platform", "expires_in": "3599"}
+            if "oauth2.googleapis.com/token" in url or "sts.googleapis.com/v1/token" in url:
+                return 200, {"access_token": "gcp-oauth-tok-secret", "expires_in": 3600}
+            if "organizations:search" in url or "/v1/organizations/" in url:
+                return 200, {"organizations": [{"name": "organizations/99887766", "displayName": "Org Nine"}], "displayName": "Org Nine"}
+            if "cloudresourcemanager.googleapis.com/v1/projects/gcp-org-proj" in url:
+                return 200, {"projectId": "gcp-org-proj", "name": "GCP Org Project", "lifecycleState": "ACTIVE"}
+            if "cloudresourcemanager.googleapis.com/v1/projects" in url:
+                return 200, {"projects": [{"projectId": "gcp-org-proj", "name": "GCP Org Project", "lifecycleState": "ACTIVE"}]}
+            if "logging.googleapis.com/v2/entries:list" in url:
+                return 200, {
+                    "entries": [
+                        {
+                            "insertId": "gcp-live-sa-key-01",
+                            "timestamp": "2026-11-28T04:00:00Z",
+                            "logName": "projects/gcp-org-proj/logs/cloudaudit.googleapis.com%2Factivity",
+                            "resource": {"type": "service_account", "labels": {"project_id": "gcp-org-proj"}},
+                            "protoPayload": {
+                                "serviceName": "iam.googleapis.com",
+                                "methodName": "google.iam.admin.v1.CreateServiceAccountKey",
+                                "authenticationInfo": {"principalEmail": "attacker@gcp-org-proj.iam.gserviceaccount.com"},
+                                "requestMetadata": {"callerIp": "203.0.113.88", "callerSuppliedUserAgent": "curl/8.4.0"},
+                            },
+                        }
+                    ]
+                }
+            if "iam.googleapis.com/v1/projects/" in url:
+                return 200, {"accounts": [{"email": "siem@gcp-org-proj.iam.gserviceaccount.com"}]}
+            if "storage.googleapis.com/storage/v1/b" in url:
+                return 200, {"items": [{"name": "prod-gcp-audit-bucket"}]}
+            if "secretmanager.googleapis.com/v1/projects/" in url:
+                return 200, {"secrets": [{"name": "projects/gcp-org-proj/secrets/db-master"}]}
+            if "169.254.169.254/metadata/identity" in url:
+                return 200, {"access_token": az_jwt, "expires_in": 3599}
+            if "login.microsoftonline.com" in url:
+                return 200, {"access_token": az_jwt, "expires_in": 3599}
+            if "/providers/Microsoft.Management/managementGroups" in url:
+                return 200, {"value": [{"name": "org-root-mg", "properties": {"displayName": "Root MG"}}]}
+            if "/providers/Microsoft.Insights/eventtypes/management/values" in url:
+                return 200, {
+                    "value": [
+                        {
+                            "eventDataId": "az-live-rbac-01",
+                            "eventTimestamp": "2026-11-28T04:05:00Z",
+                            "operationName": {"value": "Microsoft.Authorization/roleAssignments/write"},
+                            "status": {"value": "Succeeded"},
+                            "caller": "spn-attacker@contoso.com",
+                            "resourceId": "/subscriptions/sub-101/resourceGroups/rg-prod",
+                        }
+                    ]
+                }
+            if "graph.microsoft.com/v1.0/auditLogs" in url:
+                return 200, {"value": []}
+            if "/providers/Microsoft.KeyVault/vaults" in url:
+                return 200, {"value": [{"name": "kv-prod-secrets"}]}
+            if "/providers/Microsoft.Storage/storageAccounts" in url:
+                return 200, {"value": [{"name": "stprodaudit"}]}
+            if "/resourcegroups" in url or "/providers/Microsoft.Compute/virtualMachines" in url:
+                return 200, {"value": [{"name": "rg-or-vm-prod"}]}
+            if "management.azure.com/subscriptions" in url:
+                return 200, {
+                    "subscriptionId": "sub-101",
+                    "displayName": "Prod Sub",
+                    "tenantId": "tenant-org-1",
+                    "state": "Enabled",
+                    "value": [{"subscriptionId": "sub-101", "displayName": "Prod Sub", "tenantId": "tenant-org-1", "state": "Enabled"}],
+                }
+            raise AssertionError(f"Unexpected mocked URL: {method} {url}")
+
+        monkeypatch.setattr(cloud_connect.shutil, "which", fake_which)
+        monkeypatch.setattr(cloud_connect.subprocess, "run", fake_run)
+        monkeypatch.setattr(cloud_connect, "_default_https_json", fake_http)
+        monkeypatch.setattr(cloud_connect, "_default_https_bytes", lambda *a, **k: (200, "{}"))
+
+        # Test all GCP auth modes (org + single)
+        for mode_payload in (
+            {"auth_mode": "gcloud_adc", "scope": "organization"},
+            {"auth_mode": "impersonate_sa", "service_account": "siem@gcp-org-proj.iam.gserviceaccount.com", "project_id": "gcp-org-proj", "scope": "single_project"},
+            {"auth_mode": "service_account_json", "service_account_json": {"client_email": "siem@gcp-org-proj.iam.gserviceaccount.com", "private_key": syn_pem, "project_id": "gcp-org-proj"}, "scope": "single_project"},
+            {"auth_mode": "workload_identity", "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/o", "subject_token": "oidc-jwt-secret", "project_id": "gcp-org-proj", "scope": "single_project"},
+            {"auth_mode": "in_memory_token", "access_token": "ya29.secret-gcp", "project_id": "gcp-org-proj", "scope": "organization"},
+        ):
+            res_g = cloud_connect.verify_and_connect_gcp(mode_payload, http_fn=fake_http, runner_fn=fake_run)
+            assert res_g["identity"]["project_id"] == "gcp-org-proj"
+
+        # Test all Azure auth modes (org + single)
+        for az_payload in (
+            {"auth_mode": "az_cli", "scope": "organization"},
+            {"auth_mode": "service_principal", "tenant_id": "tenant-org-1", "client_id": "app-001", "client_secret": "az-client-secret-ram", "scope": "organization"},
+            {"auth_mode": "oidc_federated", "tenant_id": "tenant-org-1", "client_id": "app-001", "federated_token": "fed-oidc-jwt", "scope": "single_subscription", "subscription_id": "sub-101"},
+            {"auth_mode": "managed_identity", "scope": "single_subscription", "subscription_id": "sub-101"},
+            {"auth_mode": "in_memory_token", "access_token": az_jwt, "graph_token": "graph-ram-secret", "scope": "organization"},
+        ):
+            res_a = cloud_connect.verify_and_connect_azure(az_payload, http_fn=fake_http, runner_fn=fake_run)
+            assert res_a["identity"]["tenant_id"] == "tenant-org-1"
+
+        # Connect GCP + Azure through Web Control Plane API and verify secret isolation
+        tok = web_app.get_session_token()
+        r_gcp = _raw_asgi(
+            "POST",
+            "/api/connect/gcp",
+            payload={"auth_mode": "in_memory_token", "access_token": "ya29.secret-gcp", "project_id": "gcp-org-proj", "scope": "organization"},
+            headers={"x-identity-shield-token": tok},
+        )
+        assert r_gcp.status_code == 200
+        assert r_gcp.json()["connected"] is True
+        assert r_gcp.json()["identity"]["organization_id"] == "99887766"
+
+        r_az = _raw_asgi(
+            "POST",
+            "/api/connect/azure",
+            payload={"auth_mode": "service_principal", "tenant_id": "tenant-org-1", "client_id": "app-001", "client_secret": "super-secret-client", "scope": "organization"},
+            headers={"x-identity-shield-token": tok},
+        )
+        assert r_az.status_code == 200
+        assert r_az.json()["connected"] is True
+        assert r_az.json()["identity"]["management_groups_accessible"] == 1
+
+        st_json = _raw_asgi("GET", "/api/state").json()
+        assert st_json["connections"]["gcp"]["connected"] is True
+        assert st_json["connections"]["azure"]["connected"] is True
+        dumped_state = json.dumps(st_json)
+        assert "ya29.secret-gcp" not in dumped_state
+        assert "super-secret-client" not in dumped_state
+        assert az_jwt not in dumped_state
+        ws_text = settings.workspace_config_path().read_text(encoding="utf-8")
+        assert "ya29.secret-gcp" not in ws_text
+        assert "super-secret-client" not in ws_text
+
+        # Templates include AWS, GCP & Azure single/org templates
+        tpls = _raw_asgi("GET", "/api/connect/templates").json()["templates"]
+        assert {"single-account", "organization", "gcp-single", "gcp-organization", "azure-single", "azure-organization"} <= set(tpls.keys())
+
+        # Live Cloud SIEM Pull ingests real GCP + Azure audit entries and detects alerts automatically
+        r_pull = _raw_asgi(
+            "POST",
+            "/api/clouds/pull",
+            payload={"cloud_provider": "connected", "hours": 24, "replay_rules": True},
+            headers={"x-identity-shield-token": tok},
+        )
+        assert r_pull.status_code == 200
+        pull_out = r_pull.json()
+        assert pull_out["ingested_by_cloud"]["gcp"] == 1
+        assert pull_out["ingested_by_cloud"]["azure"] == 1
+        assert pull_out["replay_stats"]["multicloud-v1"] >= 2
+
+        # Live Multi-Cloud Census feeds Closed-Loop from_resources vectors
+        r_cen = _raw_asgi(
+            "POST",
+            "/api/clouds/census",
+            payload={"cloud_provider": "connected"},
+            headers={"x-identity-shield-token": tok},
+        )
+        assert r_cen.status_code == 200
+        cen = r_cen.json()
+        assert "prod-gcp-audit-bucket" in cen["clouds"]["gcp"]["buckets"]
+        assert "kv-prod-secrets" in cen["clouds"]["azure"]["key_vaults"]
+
+        conn = connect(mc_env["db"])
+        try:
+            prev_res = preview_closed_loop_vectors(conn, mode="from_resources", cloud_provider="gcp")
+            assert any(v["target_resource"] == "prod-gcp-audit-bucket" for v in prev_res["vectors"])
+        finally:
+            conn.close()
+
+        # Multi-cloud Cloud Archive (GCS & Azure Blob) works via connected tokens
+        gcs_arch = service.archive_telemetry_to_cloud({"provider": "gcp", "bucket": "prod-gcp-audit-bucket"}, db_path=mc_env["db"])
+        az_arch = service.archive_telemetry_to_cloud({"provider": "azure", "storage_account": "stprodaudit", "container": "siem-logs"}, db_path=mc_env["db"])
+        assert gcs_arch["uri"].startswith("gs://prod-gcp-audit-bucket/")
+        assert "stprodaudit.blob.core.windows.net" in az_arch["uri"]
+    finally:
+        settings.RUNTIME_SESSION.clear()

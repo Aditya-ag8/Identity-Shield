@@ -15,6 +15,7 @@ import copy
 import json
 import os
 import re
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -160,6 +161,68 @@ class ConnectionDescriptor:
 
 
 @dataclass
+class GcpConnectionDescriptor:
+    """Non-secret metadata describing how the workspace connects to GCP."""
+
+    auth_mode: str = "gcloud_adc"  # gcloud_adc | impersonate_sa | service_account_json | workload_identity | in_memory_token
+    project_id: str = ""
+    organization_id: str = ""
+    service_account: str = ""
+    region: str = "us-central1"
+    scope: str = "single_project"  # single_project | organization
+    gcloud_config: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> "GcpConnectionDescriptor":
+        if not data:
+            return cls()
+        defaults = cls()
+        return cls(
+            auth_mode=str(data.get("auth_mode") or defaults.auth_mode),
+            project_id=str(data.get("project_id") or ""),
+            organization_id=str(data.get("organization_id") or ""),
+            service_account=str(data.get("service_account") or ""),
+            region=str(data.get("region") or defaults.region),
+            scope=str(data.get("scope") or defaults.scope),
+            gcloud_config=str(data.get("gcloud_config") or ""),
+        )
+
+
+@dataclass
+class AzureConnectionDescriptor:
+    """Non-secret metadata describing how the workspace connects to Microsoft Azure / Entra ID."""
+
+    auth_mode: str = "az_cli"  # az_cli | service_principal | oidc_federated | managed_identity | in_memory_token
+    tenant_id: str = ""
+    subscription_id: str = ""
+    management_group_id: str = ""
+    client_id: str = ""
+    location: str = "eastus"
+    scope: str = "single_subscription"  # single_subscription | organization
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> "AzureConnectionDescriptor":
+        if not data:
+            return cls()
+        defaults = cls()
+        return cls(
+            auth_mode=str(data.get("auth_mode") or defaults.auth_mode),
+            tenant_id=str(data.get("tenant_id") or ""),
+            subscription_id=str(data.get("subscription_id") or ""),
+            management_group_id=str(data.get("management_group_id") or ""),
+            client_id=str(data.get("client_id") or ""),
+            location=str(data.get("location") or defaults.location),
+            scope=str(data.get("scope") or defaults.scope),
+        )
+
+
+@dataclass
 class ProxyConfig:
     """Configuration for the inline Live Security Proxy & Adaptive Detection."""
 
@@ -247,6 +310,9 @@ class StorageConfig:
     max_proxy_events: int = 50_000
     archive_s3_bucket: str = ""
     archive_s3_prefix: str = "identity-shield-telemetry/"
+    archive_gcs_bucket: str = ""
+    archive_azure_account: str = ""
+    archive_azure_container: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -278,6 +344,9 @@ class StorageConfig:
             max_proxy_events=max(0, int(data.get("max_proxy_events") if data.get("max_proxy_events") is not None else defaults.max_proxy_events)),
             archive_s3_bucket=str(data.get("archive_s3_bucket") or "").strip(),
             archive_s3_prefix=str(data.get("archive_s3_prefix") or defaults.archive_s3_prefix).strip(),
+            archive_gcs_bucket=str(data.get("archive_gcs_bucket") or "").strip(),
+            archive_azure_account=str(data.get("archive_azure_account") or "").strip(),
+            archive_azure_container=str(data.get("archive_azure_container") or "").strip(),
         )
 
 
@@ -302,6 +371,8 @@ def load_workspace_config() -> dict[str, Any]:
             "thresholds": ThresholdConfig().to_dict(),
             "resources": ResourceBinding().to_dict(),
             "connection": ConnectionDescriptor().to_dict(),
+            "gcp_connection": GcpConnectionDescriptor().to_dict(),
+            "azure_connection": AzureConnectionDescriptor().to_dict(),
             "proxy": ProxyConfig().to_dict(),
             "storage": StorageConfig().to_dict(),
         }
@@ -313,6 +384,8 @@ def load_workspace_config() -> dict[str, Any]:
         "thresholds": ThresholdConfig.from_dict(raw.get("thresholds")).to_dict(),
         "resources": ResourceBinding.from_dict(raw.get("resources")).to_dict(),
         "connection": ConnectionDescriptor.from_dict(raw.get("connection")).to_dict(),
+        "gcp_connection": GcpConnectionDescriptor.from_dict(raw.get("gcp_connection")).to_dict(),
+        "azure_connection": AzureConnectionDescriptor.from_dict(raw.get("azure_connection")).to_dict(),
         "proxy": ProxyConfig.from_dict(raw.get("proxy")).to_dict(),
         "storage": StorageConfig.from_dict(raw.get("storage")).to_dict(),
     }
@@ -330,6 +403,10 @@ def save_workspace_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         # Strip any accidental secret fields before saving to disk
         conn_clean = ConnectionDescriptor.from_dict(payload["connection"]).to_dict()
         current["connection"] = conn_clean
+    if "gcp_connection" in payload:
+        current["gcp_connection"] = GcpConnectionDescriptor.from_dict(payload["gcp_connection"]).to_dict()
+    if "azure_connection" in payload:
+        current["azure_connection"] = AzureConnectionDescriptor.from_dict(payload["azure_connection"]).to_dict()
     if "proxy" in payload:
         current["proxy"] = ProxyConfig.from_dict(payload["proxy"]).to_dict()
     if "storage" in payload:
@@ -391,6 +468,28 @@ def update_connection_descriptor(updates: Mapping[str, Any]) -> ConnectionDescri
     merged = {**current["connection"], **dict(updates)}
     saved = save_workspace_config({"connection": merged})
     return ConnectionDescriptor.from_dict(saved["connection"])
+
+
+def get_gcp_connection_descriptor() -> GcpConnectionDescriptor:
+    return GcpConnectionDescriptor.from_dict(load_workspace_config().get("gcp_connection"))
+
+
+def update_gcp_connection_descriptor(updates: Mapping[str, Any]) -> GcpConnectionDescriptor:
+    current = load_workspace_config()
+    merged = {**current["gcp_connection"], **dict(updates)}
+    saved = save_workspace_config({"gcp_connection": merged})
+    return GcpConnectionDescriptor.from_dict(saved["gcp_connection"])
+
+
+def get_azure_connection_descriptor() -> AzureConnectionDescriptor:
+    return AzureConnectionDescriptor.from_dict(load_workspace_config().get("azure_connection"))
+
+
+def update_azure_connection_descriptor(updates: Mapping[str, Any]) -> AzureConnectionDescriptor:
+    current = load_workspace_config()
+    merged = {**current["azure_connection"], **dict(updates)}
+    saved = save_workspace_config({"azure_connection": merged})
+    return AzureConnectionDescriptor.from_dict(saved["azure_connection"])
 
 
 # ---------------------------------------------------------------------------
@@ -558,10 +657,12 @@ def remove_attack(technique_id: str) -> dict[str, Any]:
 
 
 class RuntimeSessionStore:
-    """Process-local AWS session cache. Secrets never touch disk."""
+    """Process-local multi-cloud session cache (AWS, GCP, Azure). Secrets never touch disk."""
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._active: dict[str, Any] | None = None
+        self._providers: dict[str, dict[str, Any]] = {}
 
     def set_connection(
         self,
@@ -573,33 +674,104 @@ class RuntimeSessionStore:
         account_id: str,
         in_memory_keys: Mapping[str, str] | None = None,
     ) -> None:
-        self._active = {
-            "descriptor": descriptor.to_dict(),
-            "boto_session": boto_session,
-            "classification": copy.deepcopy(classification),
-            "caller_arn": caller_arn,
-            "account_id": account_id,
-            "has_temp_keys": bool(in_memory_keys),
-        }
+        with self._lock:
+            entry = {
+                "descriptor": descriptor.to_dict(),
+                "boto_session": boto_session,
+                "classification": copy.deepcopy(classification),
+                "caller_arn": caller_arn,
+                "account_id": account_id,
+                "has_temp_keys": bool(in_memory_keys),
+            }
+            self._active = entry
+            self._providers["aws"] = entry
 
-    def clear(self) -> None:
-        self._active = None
+    def set_cloud_connection(
+        self,
+        provider: str,
+        *,
+        descriptor: Mapping[str, Any],
+        identity: Mapping[str, Any],
+        material: Mapping[str, Any] | None = None,
+    ) -> None:
+        clean_provider = str(provider or "").strip().lower()
+        if clean_provider not in {"aws", "gcp", "azure"}:
+            raise ValueError(f"Unsupported cloud provider: {provider!r}")
+        with self._lock:
+            self._providers[clean_provider] = {
+                "descriptor": copy.deepcopy(dict(descriptor)),
+                "identity": copy.deepcopy(dict(identity)),
+                "material": dict(material or {}),
+            }
+
+    def clear(self, provider: str | None = None) -> None:
+        with self._lock:
+            if provider is None:
+                self._active = None
+                self._providers.clear()
+                return
+            clean = str(provider).strip().lower()
+            if clean == "aws":
+                self._active = None
+            self._providers.pop(clean, None)
 
     def status(self) -> dict[str, Any]:
-        if not self._active:
-            return {"connected": False, "descriptor": get_connection_descriptor().to_dict()}
+        with self._lock:
+            if not self._active:
+                return {"connected": False, "descriptor": get_connection_descriptor().to_dict()}
+            return {
+                "connected": True,
+                "account_id": self._active["account_id"],
+                "caller_arn": self._active["caller_arn"],
+                "descriptor": self._active["descriptor"],
+                "classification": self._active["classification"],
+            }
+
+    def provider_status(self, provider: str) -> dict[str, Any]:
+        clean = str(provider or "").strip().lower()
+        with self._lock:
+            if clean == "aws":
+                return self.status()
+            if clean == "gcp":
+                entry = self._providers.get("gcp")
+                if not entry:
+                    return {"connected": False, "descriptor": get_gcp_connection_descriptor().to_dict()}
+                return {
+                    "connected": True,
+                    "descriptor": copy.deepcopy(entry["descriptor"]),
+                    "identity": copy.deepcopy(entry["identity"]),
+                }
+            if clean == "azure":
+                entry = self._providers.get("azure")
+                if not entry:
+                    return {"connected": False, "descriptor": get_azure_connection_descriptor().to_dict()}
+                return {
+                    "connected": True,
+                    "descriptor": copy.deepcopy(entry["descriptor"]),
+                    "identity": copy.deepcopy(entry["identity"]),
+                }
+        raise ValueError(f"Unsupported cloud provider: {provider!r}")
+
+    def all_statuses(self) -> dict[str, dict[str, Any]]:
         return {
-            "connected": True,
-            "account_id": self._active["account_id"],
-            "caller_arn": self._active["caller_arn"],
-            "descriptor": self._active["descriptor"],
-            "classification": self._active["classification"],
+            "aws": self.provider_status("aws"),
+            "gcp": self.provider_status("gcp"),
+            "azure": self.provider_status("azure"),
         }
 
+    def get_provider_material(self, provider: str) -> dict[str, Any] | None:
+        clean = str(provider or "").strip().lower()
+        with self._lock:
+            entry = self._providers.get(clean)
+            if not entry:
+                return None
+            return dict(entry.get("material") or {})
+
     def boto_session(self) -> Any | None:
-        if not self._active:
-            return None
-        return self._active.get("boto_session")
+        with self._lock:
+            if not self._active:
+                return None
+            return self._active.get("boto_session")
 
 
 RUNTIME_SESSION = RuntimeSessionStore()

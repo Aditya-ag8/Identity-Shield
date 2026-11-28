@@ -169,19 +169,26 @@ async def api_state(_request: Request) -> JSONResponse:
         {
             "db": db,
             "connection": settings.RUNTIME_SESSION.status(),
+            "connections": settings.RUNTIME_SESSION.all_statuses(),
             "thresholds": cfg["thresholds"],
             "resources": cfg["resources"],
             "proxy": cfg["proxy"],
             "storage": cfg["storage"],
             "proxy_status": service.proxy_status(),
             "profiles": service.list_local_aws_profiles(),
+            "cloud_profiles": service.list_local_cloud_profiles(),
             "jobs": service.JOBS.list_jobs(),
         }
     )
 
 
 async def api_profiles(_request: Request) -> JSONResponse:
-    return JSONResponse({"profiles": service.list_local_aws_profiles()})
+    return JSONResponse(
+        {
+            "profiles": service.list_local_aws_profiles(),
+            "clouds": service.list_local_cloud_profiles(),
+        }
+    )
 
 
 async def api_templates(_request: Request) -> JSONResponse:
@@ -199,6 +206,32 @@ async def api_connect(request: Request) -> JSONResponse:
 
 async def api_disconnect(_request: Request) -> JSONResponse:
     return JSONResponse(service.disconnect_aws())
+
+
+async def api_connect_gcp(request: Request) -> JSONResponse:
+    try:
+        payload = await _body(request)
+        res = await asyncio.to_thread(service.connect_gcp, payload)
+        return JSONResponse(res)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(exc, 400)
+
+
+async def api_disconnect_gcp(_request: Request) -> JSONResponse:
+    return JSONResponse(service.disconnect_gcp())
+
+
+async def api_connect_azure(request: Request) -> JSONResponse:
+    try:
+        payload = await _body(request)
+        res = await asyncio.to_thread(service.connect_azure, payload)
+        return JSONResponse(res)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(exc, 400)
+
+
+async def api_disconnect_azure(_request: Request) -> JSONResponse:
+    return JSONResponse(service.disconnect_azure())
 
 
 async def api_lab_doctor(_request: Request) -> JSONResponse:
@@ -678,11 +711,7 @@ async def api_storage_export(request: Request) -> Response:
 async def api_storage_archive(request: Request) -> JSONResponse:
     try:
         payload = await _body(request)
-        res = await asyncio.to_thread(
-            service.archive_telemetry_to_s3,
-            bucket=payload.get("bucket") or None,
-            prefix=payload.get("prefix") or None,
-        )
+        res = await asyncio.to_thread(service.archive_telemetry_to_cloud, payload)
         return JSONResponse(res)
     except Exception as exc:  # noqa: BLE001
         return _json_error(exc, 400)
@@ -771,6 +800,25 @@ async def api_clouds_ingest(request: Request) -> JSONResponse:
         return _json_error(exc, 400)
 
 
+async def api_clouds_pull(request: Request) -> JSONResponse:
+    try:
+        payload = await _body(request)
+        res = await asyncio.to_thread(service.pull_cloud_siem_logs_service, payload)
+        return JSONResponse(res)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(exc, 400)
+
+
+async def api_clouds_census(request: Request) -> JSONResponse:
+    try:
+        payload = await _body(request)
+        cp = str(payload.get("cloud_provider") or "connected")
+        res = await asyncio.to_thread(service.run_multicloud_census_service, cp)
+        return JSONResponse(res)
+    except Exception as exc:  # noqa: BLE001
+        return _json_error(exc, 400)
+
+
 async def api_tools_scoutsuite_import(request: Request) -> JSONResponse:
     try:
         payload = await _body(request)
@@ -799,6 +847,10 @@ routes = [
     Route("/api/connect/templates", api_templates, methods=["GET"]),
     Route("/api/connect", api_connect, methods=["POST"]),
     Route("/api/connect/disconnect", api_disconnect, methods=["POST"]),
+    Route("/api/connect/gcp", api_connect_gcp, methods=["POST"]),
+    Route("/api/connect/gcp/disconnect", api_disconnect_gcp, methods=["POST"]),
+    Route("/api/connect/azure", api_connect_azure, methods=["POST"]),
+    Route("/api/connect/azure/disconnect", api_disconnect_azure, methods=["POST"]),
     Route("/api/lab/doctor", api_lab_doctor, methods=["POST"]),
     Route("/api/lab/census", api_lab_census, methods=["POST"]),
     Route("/api/lab/resources", api_lab_resources, methods=["POST"]),
@@ -851,6 +903,8 @@ routes = [
     Route("/api/tools/pacu/recon", api_tools_pacu_recon, methods=["POST"]),
     Route("/api/clouds", api_clouds_status, methods=["GET"]),
     Route("/api/clouds/ingest", api_clouds_ingest, methods=["POST"]),
+    Route("/api/clouds/pull", api_clouds_pull, methods=["POST"]),
+    Route("/api/clouds/census", api_clouds_census, methods=["POST"]),
     Route("/api/siem/export", api_siem_export, methods=["POST"]),
     Route("/api/closed-loop/preview", api_closed_loop_preview, methods=["GET"]),
     Route("/api/closed-loop/run", api_closed_loop_run, methods=["POST"]),

@@ -167,14 +167,34 @@ def config_main(argv: list[str] | None = None) -> int:
     p_bind.add_argument("--admin-role", default=None)
     p_bind.add_argument("--json", action="store_true")
 
-    p_conn = sub.add_parser("connect", help="test and save AWS connection descriptor (Profile or STS AssumeRole)")
-    p_conn.add_argument("--mode", choices=["profile", "assume_role"], default="profile")
+    p_conn = sub.add_parser("connect", help="test and save AWS connection descriptor (Profile, AssumeRole, or Env)")
+    p_conn.add_argument("--mode", choices=["profile", "assume_role", "env_default"], default="profile")
     p_conn.add_argument("--profile", default="lab")
     p_conn.add_argument("--role-arn", default="")
     p_conn.add_argument("--external-id", default="")
     p_conn.add_argument("--region", default="eu-west-1")
     p_conn.add_argument("--scope", choices=["single_account", "organization"], default="single_account")
     p_conn.add_argument("--json", action="store_true")
+
+    p_cgcp = sub.add_parser("connect-gcp", help="connect & verify GCP account/project or whole GCP Organization")
+    p_cgcp.add_argument("--mode", choices=["gcloud_adc", "impersonate_sa", "in_memory_token", "workload_identity"], default="gcloud_adc")
+    p_cgcp.add_argument("--project", default="")
+    p_cgcp.add_argument("--organization", default="")
+    p_cgcp.add_argument("--service-account", default="")
+    p_cgcp.add_argument("--region", default="us-central1")
+    p_cgcp.add_argument("--scope", choices=["single_project", "organization"], default="single_project")
+    p_cgcp.add_argument("--gcloud-config", default="")
+    p_cgcp.add_argument("--json", action="store_true")
+
+    p_caz = sub.add_parser("connect-azure", help="connect & verify Azure subscription or whole Entra/Org tenant")
+    p_caz.add_argument("--mode", choices=["az_cli", "service_principal", "managed_identity", "in_memory_token"], default="az_cli")
+    p_caz.add_argument("--tenant-id", default="")
+    p_caz.add_argument("--subscription-id", default="")
+    p_caz.add_argument("--management-group", default="")
+    p_caz.add_argument("--client-id", default="")
+    p_caz.add_argument("--location", default="eastus")
+    p_caz.add_argument("--scope", choices=["single_subscription", "organization"], default="single_subscription")
+    p_caz.add_argument("--json", action="store_true")
 
     p_stor = sub.add_parser("storage", help="link self-hosted database file path, retention cap, or S3 archive bucket")
     p_stor.add_argument("--db-path", default=None, help="custom SQLite file path (pass empty string '' to reset default)")
@@ -261,7 +281,42 @@ def config_main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
         return 0
 
-    if args.action == "storage":
+    if args.action == "connect-gcp":
+        import os
+
+        res = service.connect_gcp(
+            {
+                "auth_mode": args.mode,
+                "project_id": args.project,
+                "organization_id": args.organization,
+                "service_account": args.service_account,
+                "region": args.region,
+                "scope": args.scope,
+                "gcloud_config": args.gcloud_config,
+                "access_token": os.environ.get("IDENTITY_SHIELD_GCP_TOKEN", ""),
+            }
+        )
+        print(json.dumps(res, indent=2))
+        return 0
+
+    if args.action == "connect-azure":
+        import os
+
+        res = service.connect_azure(
+            {
+                "auth_mode": args.mode,
+                "tenant_id": args.tenant_id,
+                "subscription_id": args.subscription_id,
+                "management_group_id": args.management_group,
+                "client_id": args.client_id,
+                "location": args.location,
+                "scope": args.scope,
+                "client_secret": os.environ.get("IDENTITY_SHIELD_AZURE_CLIENT_SECRET", ""),
+                "access_token": os.environ.get("IDENTITY_SHIELD_AZURE_TOKEN", ""),
+            }
+        )
+        print(json.dumps(res, indent=2))
+        return 0
         updates: dict[str, Any] = {}
         if args.db_path is not None:
             updates["db_path"] = args.db_path
@@ -351,6 +406,13 @@ def logs_main(argv: list[str] | None = None) -> int:
     p_ing.add_argument("--cloud", default="auto", choices=["auto", "aws", "gcp", "azure"])
     p_ing.add_argument("--db", default=None)
 
+    p_pull = sub.add_parser("pull", help="pull live audit logs from connected AWS, GCP, and/or Azure clouds into SIEM")
+    p_pull.add_argument("--cloud", default="connected", choices=["connected", "all", "aws", "gcp", "azure"])
+    p_pull.add_argument("--hours", type=int, default=24)
+    p_pull.add_argument("--limit", type=int, default=100)
+    p_pull.add_argument("--no-replay", action="store_true")
+    p_pull.add_argument("--db", default=None)
+
     p_tr = sub.add_parser("trials", help="inspect trial execution logs")
     p_tr.add_argument("--limit", type=int, default=50)
     p_tr.add_argument("--db", default=None)
@@ -364,6 +426,19 @@ def logs_main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"Invalid or missing log file: {args.file}")
         res = service.ingest_cloud_logs_service(
             {"json_text": src.read_text(encoding="utf-8"), "cloud_provider": args.cloud},
+            db_path=db,
+        )
+        print(json.dumps(res, indent=2))
+        return 0
+
+    if args.kind == "pull":
+        res = service.pull_cloud_siem_logs_service(
+            {
+                "cloud_provider": args.cloud,
+                "hours": args.hours,
+                "limit": args.limit,
+                "replay_rules": not bool(args.no_replay),
+            },
             db_path=db,
         )
         print(json.dumps(res, indent=2))

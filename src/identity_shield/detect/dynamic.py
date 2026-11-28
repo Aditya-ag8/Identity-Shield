@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
@@ -551,41 +554,157 @@ def _eval_drift(
     return None
 
 
+def _canonicalize_http_value(raw_text: str, *, treat_as_path: bool = False) -> dict[str, Any]:
+    """Decode layered encodings, NFKC Unicode, backslashes, matrix params, and dot-segments."""
+    raw = str(raw_text or "")
+    segment = raw.partition("?")[0] if treat_as_path else raw
+    raw_low = segment.lower()
+
+    has_overlong_or_null = any(tok in raw_low for tok in ("%c0%af", "%c0%ae", "%c1%9c", "%c1%1c", "%00", "\x00"))
+    has_encoded_sep_or_dot = any(tok in raw_low for tok in ("%2e", "%2f", "%5c", "%25"))
+
+    cur = unicodedata.normalize("NFKC", segment)
+    decode_layers = 0
+    for _ in range(4):
+        nxt = unicodedata.normalize("NFKC", urllib.parse.unquote(cur))
+        if nxt == cur:
+            break
+        decode_layers += 1
+        cur = nxt
+
+    normalized = cur.replace("\\", "/")
+    obfuscated_separators = (
+        "//" in segment.replace("://", "")
+        or "\\\\" in segment
+        or (".." in normalized and (".//" in raw_low or "..//" in raw_low or ";/" in normalized or "..;" in raw_low))
+    )
+
+    # Collapse duplicate slashes and inspect directory traversal depth / matrix parameters
+    had_matrix_dot = False
+    stack: list[str] = []
+    escapes_root = False
+    has_traversal = False
+    raw_parts = [p for p in re.split(r"/+", normalized) if p != ""]
+    clean_parts: list[str] = []
+    for part in raw_parts:
+        base_part = part.split(";", 1)[0]
+        if base_part != part and (base_part in {".", ".."} or base_part.startswith(".")):
+            had_matrix_dot = True
+        if base_part == ".":
+            has_traversal = True
+            continue
+        if base_part == "..":
+            has_traversal = True
+            if stack:
+                stack.pop()
+            else:
+                escapes_root = True
+            clean_parts.append("..")
+            continue
+        stack.append(base_part)
+        clean_parts.append(base_part)
+
+    canonical_collapsed = ("/" + "/".join(stack)) if treat_as_path else "/".join(clean_parts)
+    canonical_with_dots = ("/" + "/".join(clean_parts)) if treat_as_path else "/".join(clean_parts)
+    evasion_signals: list[str] = []
+    if decode_layers > 1 and ("." in normalized or "/" in normalized):
+        evasion_signals.append(f"multi-layer URL encoding ({decode_layers}x)")
+    if has_overlong_or_null:
+        evasion_signals.append("overlong/null-byte encoding")
+    if has_encoded_sep_or_dot and (has_traversal or canonical_collapsed.startswith("/.") or "/." in canonical_collapsed):
+        evasion_signals.append("encoded dot/slash path")
+    if escapes_root:
+        evasion_signals.append("directory traversal escaping root")
+    if had_matrix_dot or (obfuscated_separators and has_traversal):
+        evasion_signals.append("obfuscated dot-segment separators")
+
+    return {
+        "canonical_collapsed": canonical_collapsed.lower(),
+        "canonical_with_dots": canonical_with_dots.lower(),
+        "decoded_raw": normalized.lower(),
+        "decode_layers": decode_layers,
+        "evasion_signals": evasion_signals,
+    }
+
+
+def _collect_http_inspection_forms(path: str, params_text: str) -> tuple[list[str], list[str], list[str]]:
+    """Return `(path_forms, combined_forms, evasion_signals)` for `_eval_app_anomaly`."""
+    p_meta = _canonicalize_http_value(path, treat_as_path=True)
+    path_forms = [
+        str(path or "").lower(),
+        p_meta["decoded_raw"],
+        p_meta["canonical_collapsed"],
+        p_meta["canonical_with_dots"],
+    ]
+    evasion_signals = list(p_meta["evasion_signals"])
+
+    param_forms: list[str] = [str(params_text or "").lower()]
+    if "?" in str(path or ""):
+        q_raw = str(path).partition("?")[2]
+        q_meta = _canonicalize_http_value(q_raw, treat_as_path=False)
+        param_forms.extend([q_meta["decoded_raw"], q_meta["canonical_with_dots"]])
+        for sig in q_meta["evasion_signals"]:
+            if sig not in evasion_signals:
+                evasion_signals.append(sig)
+
+    try:
+        parsed_params = json.loads(params_text) if params_text else {}
+    except Exception:
+        parsed_params = {}
+    if isinstance(parsed_params, Mapping):
+        for val in parsed_params.values():
+            vals = val if isinstance(val, list) else [val]
+            for item in vals:
+                s = str(item or "")
+                if not s:
+                    continue
+                v_meta = _canonicalize_http_value(s, treat_as_path=False)
+                param_forms.extend([s.lower(), v_meta["decoded_raw"], v_meta["canonical_with_dots"]])
+                for sig in v_meta["evasion_signals"]:
+                    if sig not in evasion_signals:
+                        evasion_signals.append(sig)
+
+    combined_forms = path_forms + param_forms
+    return path_forms, combined_forms, evasion_signals
+
+
 def _eval_app_anomaly(
     rule: Mapping[str, Any],
     current: Mapping[str, Any],
     history: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
     cfg = rule.get("config") or {}
-    path = str(current.get("path") or "").lower()
-    params_text = str(current.get("params_json") or "").lower()
-    combined = f"{path} {params_text}"
+    path = str(current.get("path") or "")
+    params_text = str(current.get("params_json") or "")
+    path_forms, combined_forms, evasion_signals = _collect_http_inspection_forms(path, params_text)
 
     suspicious_paths = [str(p).lower() for p in cfg.get("suspicious_paths") or ()]
     payload_patterns = [str(p).lower() for p in cfg.get("payload_patterns") or ()]
 
-    hit_paths = [p for p in suspicious_paths if p and p in path]
-    hit_payloads = [p for p in payload_patterns if p and p in combined]
-    if hit_paths or hit_payloads:
-        findings = hit_paths + hit_payloads
+    hit_paths = [p for p in suspicious_paths if p and any(p in pf for pf in path_forms)]
+    hit_payloads = [p for p in payload_patterns if p and any(p in cf for cf in combined_forms)]
+    if hit_paths or hit_payloads or evasion_signals:
+        findings = hit_paths + hit_payloads + evasion_signals
         return {
             "rule_id": rule["rule_id"],
             "rule_name": rule["name"],
             "kind": "app_anomaly",
             "severity": rule["severity"],
-            "summary": f"Suspicious HTTP probe/payload detected: {', '.join(findings[:4])}",
-            "evidence": {"matched_paths": hit_paths, "matched_payloads": hit_payloads, "path": path},
+            "summary": f"Suspicious HTTP probe/payload/evasion detected: {', '.join(findings[:4])}",
+            "evidence": {
+                "matched_paths": hit_paths,
+                "matched_payloads": hit_payloads,
+                "evasion_signals": evasion_signals,
+                "path": path.lower(),
+                "canonical_path": path_forms[2] if len(path_forms) > 2 else path.lower(),
+            },
         }
 
-    # Auth failure / denied burst check against recent history
+    # Auth failure & scanner 404 sweep checks against recent history
     auth_codes = {int(c) for c in cfg.get("auth_failure_statuses") or (401, 403)}
     window_start = _parse_ts(current.get("timestamp")) - timedelta(seconds=int(rule["window_seconds"]))
-    denied = [
-        h
-        for h in history
-        if _parse_ts(h.get("timestamp")) >= window_start
-        and int(h.get("status_code") or 0) in auth_codes
-    ]
+    recent = [h for h in history if _parse_ts(h.get("timestamp")) >= window_start]
+    denied = [h for h in recent if int(h.get("status_code") or 0) in auth_codes]
     if len(denied) >= int(rule["threshold"]):
         return {
             "rule_id": rule["rule_id"],
@@ -594,6 +713,23 @@ def _eval_app_anomaly(
             "severity": rule["severity"],
             "summary": f"{len(denied)} HTTP {sorted(auth_codes)} responses in {rule['window_seconds']}s",
             "evidence": {"denied_count": len(denied), "window_seconds": rule["window_seconds"]},
+        }
+
+    not_found_paths = {
+        str(h.get("path") or "").partition("?")[0]
+        for h in recent
+        if int(h.get("status_code") or 0) == 404 and h.get("path")
+    }
+    if int(current.get("status_code") or 0) == 404 and path:
+        not_found_paths.add(path.partition("?")[0])
+    if len(not_found_paths) >= max(int(rule["threshold"]) + 2, 6):
+        return {
+            "rule_id": rule["rule_id"],
+            "rule_name": rule["name"],
+            "kind": "app_anomaly",
+            "severity": rule["severity"],
+            "summary": f"HTTP 404 endpoint scan across {len(not_found_paths)} distinct paths in {rule['window_seconds']}s",
+            "evidence": {"distinct_404_paths": len(not_found_paths), "window_seconds": rule["window_seconds"]},
         }
     return None
 

@@ -413,3 +413,83 @@ def test_cli_bridge_subcommands_ipv6_connect_and_ssrf_fields(sec_env):
             db.close()
     finally:
         PROXY_RUNTIME.stop()
+
+
+def test_http_canonicalization_encoding_and_obfuscation_evasion(sec_env):
+    from identity_shield.db.connection import connect
+    from identity_shield.detect import dynamic
+
+    conn = connect(sec_env["db"])
+    try:
+        # 1. Bypass classes must all be detected cleanly by canonicalization + obfuscation heuristics
+        attack_paths = [
+            "/api/files?name=%252e%252e%252f%252e%252e%252fsecret.yml",
+            "/.%65nv",
+            "/%2eenv",
+            "/.//./.env",
+            "/api/files?name=..//..//config.yml",
+            "/..;/..;/etc/passwd",
+            "/backup/../../arbitrary/unlisted-key.pem",
+            "/%2e%2e/%2e%2e/unlisted-creds.txt",
+        ]
+        for idx, p in enumerate(attack_paths):
+            rec = proxy_parser.parse_request(
+                method="GET",
+                url_or_path=p,
+                headers={"host": "app.example.internal", "user-agent": "Mozilla/5.0"},
+                client_ip="198.51.100.10",
+                timestamp=f"2026-11-28T10:00:0{idx}Z",
+            )
+            res = dynamic.evaluate_live_event(conn, rec, mode="observe", learn_baseline=False)
+            assert any(m["rule_id"] == "DYN-APP-001" for m in res["matched_dynamic"]), f"Missed bypass path: {p}"
+
+        # 2. HTTP 404 endpoint scanner sweep triggers DYN-APP-001 regardless of endpoint names
+        for idx in range(6):
+            r404 = proxy_parser.parse_request(
+                method="GET",
+                url_or_path=f"/hidden-endpoint-{idx}",
+                headers={"host": "app.example.internal", "user-agent": "ffuf/2.1"},
+                client_ip="198.51.100.55",
+                timestamp=f"2026-11-28T10:05:0{idx}Z",
+            )
+            r404["status_code"] = 404
+            r404["mode"] = "observe"
+            if idx < 5:
+                conn.execute(
+                    """
+                    INSERT INTO proxy_event(
+                        proxy_event_id, timestamp, cloud_provider, account_scope, traffic_type, traffic_kind,
+                        mode, action_taken, client_ip, principal, method, target_host, path, service,
+                        operation, user_agent, aws_region, params_json, status_code, event_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        r404["proxy_event_id"], r404["timestamp"], "unknown", "", "http_app", "http_app",
+                        "observe", "allowed", r404["client_ip"], r404["principal"], "GET",
+                        r404["target_host"], r404["path"], "http_app", r404["operation"],
+                        r404["user_agent"], r404["aws_region"], r404["params_json"], 404, r404["event_json"],
+                    ),
+                )
+                conn.commit()
+            else:
+                res404 = dynamic.evaluate_live_event(conn, r404, mode="observe", learn_baseline=False)
+                assert any("404 endpoint scan" in m["summary"] for m in res404["matched_dynamic"])
+
+        # 3. Normal legitimate URLs must stay clean (zero false alarms)
+        benign_paths = [
+            "/api/orders?item=42",
+            "/v1/projects/p1/buckets/my%20bucket/o",
+            "/callback?next=https://app.example.com/done",
+        ]
+        for idx, p in enumerate(benign_paths):
+            rec = proxy_parser.parse_request(
+                method="GET",
+                url_or_path=p,
+                headers={"host": "app.example.internal", "user-agent": "Chrome/130.0"},
+                client_ip="198.51.100.77",
+                timestamp=f"2026-11-28T10:10:0{idx}Z",
+            )
+            res = dynamic.evaluate_live_event(conn, rec, mode="observe", learn_baseline=True)
+            assert res["action_taken"] == "allowed", f"False positive on benign path: {p} -> {res}"
+    finally:
+        conn.close()
