@@ -4,14 +4,18 @@ const STATE = {
   view: "overview",
   app: null,
   analytics: null,
+  overviewCloud: "all",
   selectedRuleset: "baseline-v1",
   selectedRunId: "",
   attacksData: null,
   attackCloud: "all",
+  addAttackCloud: "aws",
   showAddAttack: false,
   variantsData: null,
+  varFilterCloud: "all",
   varFilterTech: "",
   varFilterSet: "",
+  campCloud: "all",
   rulesData: null,
   rulesTab: "rules",
   showAddRule: false,
@@ -38,6 +42,7 @@ const STATE = {
   logsCloud: "all",
   logsSearch: "",
   logsAlertsOnly: false,
+  labCloud: "aws",
   probeData: null,
   probeTab: "buckets",
   doctorData: null,
@@ -148,10 +153,45 @@ const SERVICE_OPERATIONS = {
   ssm: [
     { value: "describe_instance_information", hint: "DescribeInstanceInformation" },
   ],
+  "iam.googleapis.com": [
+    { value: "CreateServiceAccountKey", hint: "google.iam.admin.v1.CreateServiceAccountKey" },
+    { value: "ListServiceAccounts", hint: "google.iam.admin.v1.ListServiceAccounts" },
+  ],
+  "secretmanager.googleapis.com": [
+    { value: "AccessSecretVersion", hint: "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion" },
+    { value: "ListSecrets", hint: "google.cloud.secretmanager.v1.SecretManagerService.ListSecrets" },
+  ],
+  "storage.googleapis.com": [
+    { value: "storage.objects.get", hint: "storage.objects.get" },
+    { value: "storage.objects.list", hint: "storage.objects.list" },
+  ],
+  "compute.googleapis.com": [
+    { value: "v1.compute.instances.list", hint: "v1.compute.instances.list" },
+    { value: "v1.compute.firewalls.list", hint: "v1.compute.firewalls.list" },
+  ],
+  "cloudresourcemanager.googleapis.com": [
+    { value: "SetIamPolicy", hint: "google.cloud.resourcemanager.v3.Projects.SetIamPolicy" },
+  ],
+  "Microsoft.Authorization": [
+    { value: "roleAssignments/write", hint: "Microsoft.Authorization/roleAssignments/write" },
+    { value: "roleAssignments/read", hint: "Microsoft.Authorization/roleAssignments/read" },
+  ],
+  "Microsoft.KeyVault": [
+    { value: "SecretGet", hint: "SecretGet" },
+    { value: "SecretList", hint: "SecretList" },
+  ],
+  "Microsoft.EntraID": [
+    { value: "Add service principal credentials", hint: "Add service principal credentials" },
+    { value: "UserSignIn", hint: "UserSignIn" },
+  ],
+  "Microsoft.Compute": [
+    { value: "virtualMachines/read", hint: "Microsoft.Compute/virtualMachines/read" },
+  ],
 };
 
 const ATTACK_PRESETS = {
   vpc_enum: {
+    cloud_provider: "aws",
     technique_id: "T1538",
     name: "VPC & Network Discovery",
     tactic: "discovery",
@@ -162,6 +202,7 @@ const ATTACK_PRESETS = {
     requires_data_events: false,
   },
   s3_probe: {
+    cloud_provider: "aws",
     technique_id: "T1530.custom",
     name: "Target Bucket Existence Check",
     tactic: "collection",
@@ -172,6 +213,7 @@ const ATTACK_PRESETS = {
     requires_data_events: false,
   },
   secrets_enum: {
+    cloud_provider: "aws",
     technique_id: "T1555.custom",
     name: "Secrets Manager Enumeration",
     tactic: "credential-access",
@@ -182,6 +224,7 @@ const ATTACK_PRESETS = {
     requires_data_events: false,
   },
   iam_policies: {
+    cloud_provider: "aws",
     technique_id: "T1087.custom",
     name: "IAM Policy Enumeration",
     tactic: "discovery",
@@ -192,12 +235,79 @@ const ATTACK_PRESETS = {
     requires_data_events: false,
   },
   lambda_list: {
+    cloud_provider: "aws",
     technique_id: "T1526.custom",
     name: "Lambda Function Discovery",
     tactic: "discovery",
     service: "lambda",
     operation: "list_functions",
     event_names: "ListFunctions",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  gcp_sa_key: {
+    cloud_provider: "gcp",
+    technique_id: "T1098.GCP09",
+    name: "Custom GCP Service Account Key Creation",
+    tactic: "persistence",
+    service: "iam.googleapis.com",
+    operation: "CreateServiceAccountKey",
+    event_names: "google.iam.admin.v1.CreateServiceAccountKey",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  gcp_secret: {
+    cloud_provider: "gcp",
+    technique_id: "T1555.GCP09",
+    name: "Custom GCP Secret Version Exfiltration",
+    tactic: "credential-access",
+    service: "secretmanager.googleapis.com",
+    operation: "AccessSecretVersion",
+    event_names: "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  gcp_gcs: {
+    cloud_provider: "gcp",
+    technique_id: "T1530.GCP09",
+    name: "Custom GCS Data Bucket Read",
+    tactic: "collection",
+    service: "storage.googleapis.com",
+    operation: "storage.objects.get",
+    event_names: "storage.objects.get",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  azure_rbac: {
+    cloud_provider: "azure",
+    technique_id: "T1098.AZ09",
+    name: "Custom Azure RBAC Owner Assignment",
+    tactic: "privilege-escalation",
+    service: "Microsoft.Authorization",
+    operation: "roleAssignments/write",
+    event_names: "Microsoft.Authorization/roleAssignments/write",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  azure_kv: {
+    cloud_provider: "azure",
+    technique_id: "T1555.AZ09",
+    name: "Custom Azure Key Vault Secret Extraction",
+    tactic: "credential-access",
+    service: "Microsoft.KeyVault",
+    operation: "SecretGet",
+    event_names: "SecretGet,SecretList",
+    kwargs: "{}",
+    requires_data_events: false,
+  },
+  azure_vm: {
+    cloud_provider: "azure",
+    technique_id: "T1580.AZ09",
+    name: "Custom Azure Compute VM Discovery",
+    tactic: "discovery",
+    service: "Microsoft.Compute",
+    operation: "virtualMachines/read",
+    event_names: "Microsoft.Compute/virtualMachines/read",
     kwargs: "{}",
     requires_data_events: false,
   },
@@ -262,6 +372,86 @@ detection:
       - ListBucket
   condition: selection
 level: medium`,
+  },
+  gcp_sa_key: {
+    filename: "custom-gcp-sa-key.yml",
+    yaml: `title: Custom GCP Service Account Key Creation
+id: custom-gcp-sakey-001
+status: test
+description: Detects GCP IAM CreateServiceAccountKey calls across Cloud Audit Logs
+tags:
+  - attack.persistence
+  - attack.t1098.001
+logsource:
+  product: gcp
+  service: gcp.audit
+detection:
+  selection:
+    protoPayload.serviceName: iam.googleapis.com
+    protoPayload.methodName|contains: CreateServiceAccountKey
+  condition: selection
+level: high`,
+  },
+  gcp_secret: {
+    filename: "custom-gcp-secret.yml",
+    yaml: `title: Custom GCP Secret Manager Access
+id: custom-gcp-secret-001
+status: test
+description: Detects GCP Secret Manager AccessSecretVersion lookups
+tags:
+  - attack.credential_access
+  - attack.t1555.006
+logsource:
+  product: gcp
+  service: gcp.audit
+detection:
+  selection:
+    protoPayload.serviceName: secretmanager.googleapis.com
+    protoPayload.methodName|contains: AccessSecretVersion
+  condition: selection
+level: high`,
+  },
+  azure_kv: {
+    filename: "custom-azure-keyvault.yml",
+    yaml: `title: Custom Azure Key Vault Secret Retrieval
+id: custom-az-kv-001
+status: test
+description: Detects Azure Key Vault SecretGet / SecretList telemetry
+tags:
+  - attack.credential_access
+  - attack.t1555.006
+logsource:
+  product: azure
+  service: activitylogs
+detection:
+  selection_op:
+    operationName.value:
+      - SecretGet
+      - SecretList
+  selection_norm:
+    eventName:
+      - SecretGet
+      - SecretList
+  condition: selection_op or selection_norm
+level: high`,
+  },
+  azure_rbac: {
+    filename: "custom-azure-rbac.yml",
+    yaml: `title: Custom Azure RBAC Role Assignment Write
+id: custom-az-rbac-001
+status: test
+description: Detects Azure Authorization roleAssignments/write escalation
+tags:
+  - attack.privilege_escalation
+  - attack.t1098.003
+logsource:
+  product: azure
+  service: activitylogs
+detection:
+  selection:
+    operationName.value|contains: roleAssignments/write
+  condition: selection
+level: high`,
   },
   blank: {
     filename: "custom-rule.yml",
@@ -630,34 +820,44 @@ async function renderCurrentView() {
 async function renderOverview(root) {
   const qs = new URLSearchParams({ ruleset: STATE.selectedRuleset });
   if (STATE.selectedRunId) qs.set("run_id", STATE.selectedRunId);
+  if (STATE.overviewCloud && STATE.overviewCloud !== "all") qs.set("cloud_provider", STATE.overviewCloud);
   STATE.analytics = await api(`/api/analytics?${qs.toString()}`);
 
   const a = STATE.analytics;
   const db = STATE.app.db || {};
-  const conn = STATE.app.connection || {};
+  const conns = STATE.app.connections || {};
+  const awsConn = conns.aws || STATE.app.connection || {};
+  const gcpConn = conns.gcp || {};
+  const azConn = conns.azure || {};
+  const connectedCount = [awsConn.connected, gcpConn.connected, azConn.connected].filter(Boolean).length;
   const res = STATE.app.resources || {};
   const summary = a.summary || {};
   const overall = summary.overall || {};
   const prov = summary.provenance || {};
   const gates = a.gates || {};
+  const targetMeta = [
+    res.data_bucket ? `AWS:${res.data_bucket}` : "",
+    res.gcp_project_id ? `GCP:${res.gcp_project_id}` : "",
+    res.azure_subscription_id ? `AZ:${String(res.azure_subscription_id).slice(0, 8)}` : "",
+  ].filter(Boolean).join(" · ") || "Default";
 
   const stepBar = `
     <div class="step-bar">
       <div class="step-item" data-goto="connections">
-        <div><span class="step-num">1</span><span class="step-label">AWS Account</span></div>
-        <span class="badge ${conn.connected ? "ok" : "warn"}">${conn.connected ? "Connected" : "Offline"}</span>
+        <div><span class="step-num">1</span><span class="step-label">Cloud Connections</span></div>
+        <span class="badge ${connectedCount > 0 ? "ok" : "warn"}">${connectedCount}/3 Online</span>
       </div>
       <div class="step-item" data-goto="lab">
-        <div><span class="step-num">2</span><span class="step-label">Lab Targets</span></div>
-        <span class="step-meta mono">${esc(res.data_bucket || "Default")}</span>
+        <div><span class="step-num">2</span><span class="step-label">Multi-Cloud Targets</span></div>
+        <span class="step-meta mono">${esc(targetMeta)}</span>
       </div>
-      <div class="step-item" data-goto="attacks">
+      <div class="step-item" data-goto="variants">
         <div><span class="step-num">3</span><span class="step-label">Variants</span></div>
         <span class="step-meta mono">${db.variants || 0}</span>
       </div>
       <div class="step-item" data-goto="campaigns">
-        <div><span class="step-num">4</span><span class="step-label">Campaigns</span></div>
-        <span class="step-meta mono">${db.runs || 0} runs</span>
+        <div><span class="step-num">4</span><span class="step-label">Campaigns &amp; SIEM</span></div>
+        <span class="step-meta mono">${db.runs || 0}r · ${db.events || 0}e</span>
       </div>
     </div>
   `;
@@ -666,25 +866,34 @@ async function renderOverview(root) {
     root.innerHTML = `
       ${stepBar}
       <div class="empty-box">
-        <h2 style="margin:0 0 8px;font-size:17px">Ready to Test</h2>
-        <p class="muted-text" style="max-width:480px;margin:0 auto 18px">
-          Run an offline sample test to verify detection rules, or connect an AWS account to test live resources.
+        <h2 style="margin:0 0 8px;font-size:17px">Ready for Multi-Cloud SIEM &amp; Detection Validation</h2>
+        <p class="muted-text" style="max-width:560px;margin:0 auto 18px">
+          Run an offline sample across AWS, GCP, or Azure to verify Sigma &amp; behavioral rules, or connect your cloud accounts &amp; organizations to ingest live audit logs.
         </p>
-        <div class="row-flex" style="justify-content:center">
-          <button class="btn btn-primary" id="btn-quick-rehearsal">Run Sample Test (T1530)</button>
-          <button class="btn btn-secondary" data-goto="connections">Connect AWS</button>
+        <div class="row-flex" style="justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-primary" data-quick-sample="T1530" data-quick-rs="baseline-v1">Sample AWS (T1530)</button>
+          <button class="btn btn-primary" data-quick-sample="T1098.GCP01" data-quick-rs="multicloud-v1">Sample GCP (T1098.GCP01)</button>
+          <button class="btn btn-primary" data-quick-sample="T1555.AZ06" data-quick-rs="multicloud-v1">Sample Azure (T1555.AZ06)</button>
+          <button class="btn btn-secondary" data-goto="connections">Connect Clouds</button>
         </div>
       </div>
     `;
-    document.getElementById("btn-quick-rehearsal").onclick = async () => {
-      const job = await api("/api/campaigns/run", {
-        method: "POST",
-        body: JSON.stringify({ synthetic: true, techniques: ["T1530"], sets: ["baseline", "ofat", "pairwise"] }),
-      });
-      toast("Started sample test");
-      await navigate("campaigns");
-      attachJobStream(job.job_id);
-    };
+    root.querySelectorAll("[data-quick-sample]").forEach((btn) => {
+      btn.onclick = async () => {
+        const job = await api("/api/campaigns/run", {
+          method: "POST",
+          body: JSON.stringify({
+            synthetic: true,
+            techniques: [btn.dataset.quickSample],
+            ruleset: btn.dataset.quickRs || "multicloud-v1",
+            sets: ["baseline", "ofat", "pairwise"],
+          }),
+        });
+        toast(`Started ${btn.dataset.quickSample} sample`);
+        await navigate("campaigns");
+        attachJobStream(job.job_id);
+      };
+    });
     return;
   }
 
@@ -749,17 +958,27 @@ async function renderOverview(root) {
     ? `<span class="badge warn">Synthetic (${prov.synthetic_trials} trials)</span>`
     : prov.synthetic_trials
       ? `<span class="badge warn">Mixed (${prov.live_trials} live / ${prov.synthetic_trials} synthetic)</span>`
-      : `<span class="badge ok">Live AWS (${prov.live_trials} trials)</span>`;
+      : `<span class="badge ok">Live Cloud (${prov.live_trials} trials)</span>`;
 
   root.innerHTML = `
+    ${stepBar}
     <div class="card" style="margin-bottom:16px">
       <div class="space-between">
         <div class="row-flex">
+          <div class="field" style="width:125px">
+            <label>Cloud</label>
+            <select id="analytics-cloud">
+              <option value="all" ${(STATE.overviewCloud || "all") === "all" ? "selected" : ""}>All Clouds</option>
+              <option value="aws" ${STATE.overviewCloud === "aws" ? "selected" : ""}>AWS</option>
+              <option value="gcp" ${STATE.overviewCloud === "gcp" ? "selected" : ""}>GCP</option>
+              <option value="azure" ${STATE.overviewCloud === "azure" ? "selected" : ""}>Azure</option>
+            </select>
+          </div>
           <div class="field" style="width:180px">
             <label>Ruleset</label>
             <select id="analytics-ruleset">${rsOptions}</select>
           </div>
-          <div class="field" style="width:240px">
+          <div class="field" style="width:230px">
             <label>Run Filter</label>
             <select id="analytics-run">${runOptions}</select>
           </div>
@@ -818,6 +1037,10 @@ async function renderOverview(root) {
     ` : ""}
   `;
 
+  document.getElementById("analytics-cloud").onchange = (e) => {
+    STATE.overviewCloud = e.target.value;
+    renderOverview(root);
+  };
   document.getElementById("analytics-ruleset").onchange = (e) => {
     STATE.selectedRuleset = e.target.value;
     renderOverview(root);
@@ -1479,14 +1702,20 @@ async function renderConnections(root) {
 async function renderLab(root) {
   const res = STATE.app.resources || {};
   const th = STATE.app.thresholds || {};
+  const conns = STATE.app.connections || {};
+  const connAws = conns.aws || STATE.app.connection || {};
+  const connGcp = conns.gcp || {};
+  const connAz = conns.azure || {};
+  const labCloud = STATE.labCloud || "aws";
   const inv = STATE.probeData?.inventory || {};
+  const probeCloud = STATE.probeData?.cloud_provider || "aws";
   const tfOut = STATE.probeData?.terraform_outputs || {};
   const doc = STATE.doctorData;
 
   const bucketOpts = Array.from(
     new Map(
       [
-        ...(inv.buckets || []).map((b) => [b.name, { value: b.name, hint: b.lab_owned ? "Lab" : "Account" }]),
+        ...(probeCloud === "aws" ? (inv.buckets || []) : []).map((b) => [b.name, { value: b.name, hint: b.lab_owned ? "Lab" : "Account" }]),
         ...(tfOut.data_bucket_name ? [[tfOut.data_bucket_name, { value: tfOut.data_bucket_name, hint: "Terraform" }]] : []),
         ["is-lab-crown-jewels", { value: "is-lab-crown-jewels", hint: "Default" }],
       ]
@@ -1502,14 +1731,14 @@ async function renderLab(root) {
   const trailOpts = Array.from(
     new Map(
       [
-        ...(inv.trails || []).map((t) => [t.name, { value: t.name, hint: t.is_logging ? "Logging" : "Stopped" }]),
+        ...(probeCloud === "aws" ? (inv.trails || []) : []).map((t) => [t.name, { value: t.name, hint: t.is_logging ? "Logging" : "Stopped" }]),
         ...(tfOut.trail_name ? [[tfOut.trail_name, { value: tfOut.trail_name, hint: "Terraform" }]] : []),
         ["identity-shield-trail", { value: "identity-shield-trail", hint: "Default" }],
       ]
     ).values()
   );
 
-  const instanceOpts = (inv.ec2_instances || []).map((i) => ({
+  const instanceOpts = (probeCloud === "aws" ? (inv.ec2_instances || []) : []).map((i) => ({
     value: i.instance_id,
     label: i.instance_id,
     hint: `${i.name} · ${i.state} · SSM:${i.ssm_status}`,
@@ -1518,7 +1747,7 @@ async function renderLab(root) {
     instanceOpts.unshift({ value: tfOut.instance_id, hint: "Terraform" });
   }
 
-  const queueOpts = (inv.queues || []).map((q) => ({
+  const queueOpts = (probeCloud === "aws" ? (inv.queues || []) : []).map((q) => ({
     value: q.url,
     label: q.name,
     hint: `${q.messages_available ?? 0} msgs`,
@@ -1530,7 +1759,7 @@ async function renderLab(root) {
   const userOpts = Array.from(
     new Map(
       [
-        ...(inv.iam_users || []).map((u) => [u.name, { value: u.name, hint: u.lab_owned ? "Lab" : "IAM" }]),
+        ...(probeCloud === "aws" ? (inv.iam_users || []) : []).map((u) => [u.name, { value: u.name, hint: u.lab_owned ? "Lab" : "IAM" }]),
         ["is-test-user", { value: "is-test-user", hint: "Default" }],
       ]
     ).values()
@@ -1539,21 +1768,86 @@ async function renderLab(root) {
   const roleOpts = Array.from(
     new Map(
       [
-        ...(inv.iam_roles || []).map((r) => [r.name, { value: r.name, hint: "IAM Role" }]),
+        ...(probeCloud === "aws" ? (inv.iam_roles || []) : []).map((r) => [r.name, { value: r.name, hint: "IAM Role" }]),
         ["is-admin-role", { value: "is-admin-role", hint: "Default" }],
       ]
     ).values()
   );
 
-  root.innerHTML = `
+  // GCP dropdown options
+  const gcpProjOpts = Array.from(
+    new Map(
+      [
+        ...(((connGcp.identity || {}).project_id) ? [[connGcp.identity.project_id, { value: connGcp.identity.project_id, hint: "Active Session" }]] : []),
+        ...(((connGcp.descriptor || {}).project_id) ? [[connGcp.descriptor.project_id, { value: connGcp.descriptor.project_id, hint: "Connection" }]] : []),
+        ...(res.gcp_project_id ? [[res.gcp_project_id, { value: res.gcp_project_id, hint: "Saved" }]] : []),
+      ]
+    ).values()
+  );
+  const gcpBucketOpts = (probeCloud === "gcp" ? (inv.buckets || []) : []).map((b) => ({
+    value: b.name,
+    hint: b.project || "GCS",
+  }));
+  const gcpSecretOpts = (probeCloud === "gcp" ? (inv.secrets || []) : []).map((s) => ({
+    value: s.name,
+    hint: s.project || "Secret Manager",
+  }));
+  const gcpSaOpts = (probeCloud === "gcp" ? (inv.service_accounts || []) : []).map((sa) => ({
+    value: sa.email,
+    hint: sa.display_name || "Service Account",
+  }));
+  const gcpSinkOpts = Array.from(
+    new Map(
+      [
+        ...(probeCloud === "gcp" ? (inv.log_sinks || []) : []).map((sk) => [sk.name, { value: sk.name, hint: sk.destination || "Cloud Logging" }]),
+        ["identity-shield-audit-sink", { value: "identity-shield-audit-sink", hint: "Default" }],
+      ]
+    ).values()
+  );
+
+  // Azure dropdown options
+  const azSubOpts = Array.from(
+    new Map(
+      [
+        ...(probeCloud === "azure" ? (inv.subscriptions || []) : []).map((s) => [s.subscription_id, { value: s.subscription_id, hint: s.display_name || s.state || "Azure" }]),
+        ...(((connAz.descriptor || {}).subscription_id) ? [[connAz.descriptor.subscription_id, { value: connAz.descriptor.subscription_id, hint: "Connection" }]] : []),
+        ...(res.azure_subscription_id ? [[res.azure_subscription_id, { value: res.azure_subscription_id, hint: "Saved" }]] : []),
+      ]
+    ).values()
+  );
+  const azRgOpts = Array.from(
+    new Map(
+      [
+        ...(probeCloud === "azure" ? (inv.resource_groups || []) : []).map((g) => [g.name, { value: g.name, hint: g.location || "RG" }]),
+        ["rg-identity-shield-lab", { value: "rg-identity-shield-lab", hint: "Default" }],
+      ]
+    ).values()
+  );
+  const azVaultOpts = (probeCloud === "azure" ? (inv.key_vaults || []) : []).map((v) => ({
+    value: v.name,
+    hint: v.resource_group || v.location || "Key Vault",
+  }));
+  const azStorageOpts = (probeCloud === "azure" ? (inv.storage_accounts || []) : []).map((s) => ({
+    value: s.name,
+    hint: s.resource_group || s.location || "Storage",
+  }));
+  const azVmOpts = (probeCloud === "azure" ? (inv.vms || []) : []).map((v) => ({
+    value: v.name,
+    hint: v.resource_group || v.location || "VM",
+  }));
+  const azSpnOpts = (probeCloud === "azure" ? (inv.service_principals || []) : []).map((sp) => ({
+    value: sp.app_id,
+    hint: sp.display_name || "Entra App",
+  }));
+
+  const awsPanelHtml = `
     <div class="grid grid-2">
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">Target AWS Resources</h3>
           <div class="row-flex">
             <button type="button" class="btn btn-secondary btn-sm" id="btn-run-probe">Discover AWS</button>
-            <button type="button" class="btn btn-primary btn-sm" id="btn-run-mc-census">Multi-Cloud Census</button>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor">Doctor</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor">Doctor (AWS)</button>
           </div>
         </div>
 
@@ -1597,14 +1891,14 @@ async function renderLab(root) {
           </div>
 
           <div>
-            <button type="button" class="btn btn-primary" id="btn-save-resources">Save Targets</button>
+            <button type="button" class="btn btn-primary" id="btn-save-resources">Save AWS Targets</button>
           </div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">Terraform Lab</h3>
+          <h3 class="card-title">Terraform Lab (AWS)</h3>
           <span class="badge">Budget: $${th.budget_usd ?? 50}</span>
         </div>
 
@@ -1626,6 +1920,190 @@ async function renderLab(root) {
         </div>
       </div>
     </div>
+  `;
+
+  const gcpPanelHtml = `
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Target GCP Resources</h3>
+          <div class="row-flex">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-probe">Discover GCP</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor">Doctor (GCP)</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="grid grid-2">
+            <div class="field">
+              <label>GCP Project ID</label>
+              ${comboHtml("res-gcp-project", res.gcp_project_id, gcpProjOpts, { mono: true, placeholder: "my-gcp-project-id" })}
+            </div>
+            <div class="field">
+              <label>GCP Region</label>
+              ${comboHtml("res-gcp-region", res.gcp_region || "us-central1", GCP_REGIONS, { mono: true })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Target GCS Bucket</label>
+              ${comboHtml("res-gcp-bucket", res.gcp_bucket, gcpBucketOpts, { mono: true, placeholder: "is-gcp-crown-jewels" })}
+            </div>
+            <div class="field">
+              <label>GCS Object Key</label>
+              ${comboHtml("res-gcp-key", res.gcp_object_key || "finance/q4.csv", keyOpts, { mono: true })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Secret Manager Target</label>
+              ${comboHtml("res-gcp-secret", res.gcp_secret_name, gcpSecretOpts, { mono: true, placeholder: "prod-api-key" })}
+            </div>
+            <div class="field">
+              <label>Target Service Account</label>
+              ${comboHtml("res-gcp-sa", res.gcp_service_account, gcpSaOpts, { mono: true, placeholder: "test-sa@project.iam.gserviceaccount.com" })}
+            </div>
+          </div>
+          <div class="field">
+            <label>Cloud Audit Log Sink</label>
+            ${comboHtml("res-gcp-sink", res.gcp_log_sink || "identity-shield-audit-sink", gcpSinkOpts, { mono: true })}
+          </div>
+          <div>
+            <button type="button" class="btn btn-primary" id="btn-save-gcp-resources">Save GCP Targets</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">GCP Audit &amp; Lab Telemetry</h3>
+          <span class="badge ${connGcp.connected ? "ok" : "warn"}">${connGcp.connected ? "GCP Online" : "GCP Offline"}</span>
+        </div>
+        <div class="form-grid">
+          <div class="notice ${connGcp.connected ? "ok" : "warn"}">
+            ${connGcp.connected
+      ? `Connected as <strong>${esc((connGcp.identity || {}).principal || "GCP session")}</strong> (${esc((connGcp.descriptor || {}).scope || "single_project")}). Click <strong>Discover GCP</strong> to list buckets, service accounts, secrets &amp; log sinks.`
+      : `Connect GCP in <a href="#" data-goto="connections" style="color:inherit;font-weight:600">Connections -&gt; Google Cloud (GCP)</a> using gcloud ADC, Service Account Impersonation, SA JSON, Workload Identity, or Access Token.`
+    }
+          </div>
+          <div class="field">
+            <label>Enable Data Access Audit Logs &amp; Read-Only Viewer</label>
+            <pre class="terminal" style="margin:0">gcloud projects add-iam-policy-binding ${esc(res.gcp_project_id || "<PROJECT_ID>")} --member=serviceAccount:identity-shield-siem@${esc(res.gcp_project_id || "<PROJECT_ID>")}.iam.gserviceaccount.com --role=roles/logging.viewer
+gcloud logging sinks list --project=${esc(res.gcp_project_id || "<PROJECT_ID>")}</pre>
+          </div>
+          <div class="row-flex">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-pull-gcp-lab">Pull GCP Audit Logs</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-goto="connections">Manage GCP Connection</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const azurePanelHtml = `
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Target Azure &amp; Entra Resources</h3>
+          <div class="row-flex">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-probe">Discover Azure</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor">Doctor (Azure)</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Azure Subscription ID</label>
+              ${comboHtml("res-az-sub", res.azure_subscription_id, azSubOpts, { mono: true, placeholder: "00000000-0000-0000-0000-000000000000" })}
+            </div>
+            <div class="field">
+              <label>Azure Location</label>
+              ${comboHtml("res-az-loc", res.azure_location || "eastus", AZURE_LOCATIONS, { mono: true })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Resource Group</label>
+              ${comboHtml("res-az-rg", res.azure_resource_group || "rg-identity-shield-lab", azRgOpts, { mono: true })}
+            </div>
+            <div class="field">
+              <label>Key Vault Name</label>
+              ${comboHtml("res-az-vault", res.azure_key_vault, azVaultOpts, { mono: true, placeholder: "kv-identity-lab" })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Key Vault Secret Name</label>
+              ${comboHtml("res-az-secret", res.azure_secret_name || "lab-secret", ["lab-secret", "api-token", "db-password"], { mono: true })}
+            </div>
+            <div class="field">
+              <label>Storage Account</label>
+              ${comboHtml("res-az-storage", res.azure_storage_account, azStorageOpts, { mono: true, placeholder: "isstorageacct" })}
+            </div>
+          </div>
+          <div class="grid grid-2">
+            <div class="field">
+              <label>Target Compute VM</label>
+              ${comboHtml("res-az-vm", res.azure_vm_name, azVmOpts, { mono: true, placeholder: "vm-lab-target" })}
+            </div>
+            <div class="field">
+              <label>Entra Service Principal (App ID)</label>
+              ${comboHtml("res-az-spn", res.azure_spn_id, azSpnOpts, { mono: true, placeholder: "app-client-uuid" })}
+            </div>
+          </div>
+          <div>
+            <button type="button" class="btn btn-primary" id="btn-save-azure-resources">Save Azure Targets</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Azure Activity &amp; Entra Telemetry</h3>
+          <span class="badge ${connAz.connected ? "ok" : "warn"}">${connAz.connected ? "Azure Online" : "Azure Offline"}</span>
+        </div>
+        <div class="form-grid">
+          <div class="notice ${connAz.connected ? "ok" : "warn"}">
+            ${connAz.connected
+      ? `Connected as <strong>${esc((connAz.identity || {}).principal || "Azure session")}</strong> (${esc((connAz.descriptor || {}).scope || "single_subscription")}). Click <strong>Discover Azure</strong> to inspect subscriptions, resource groups, Key Vaults, storage accounts &amp; VMs.`
+      : `Connect Azure in <a href="#" data-goto="connections" style="color:inherit;font-weight:600">Connections -&gt; Microsoft Azure</a> using az CLI, App Registration Secret, OIDC Federated, Managed Identity, or Token.`
+    }
+          </div>
+          <div class="field">
+            <label>Read-Only Security Reader Role &amp; Activity Check</label>
+            <pre class="terminal" style="margin:0">az role assignment create --assignee &lt;APP_ID&gt; --role "Security Reader" --scope /subscriptions/${esc(res.azure_subscription_id || "<SUB_ID>")}
+az monitor activity-log list --max-events 25</pre>
+          </div>
+          <div class="row-flex">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-pull-az-lab">Pull Azure &amp; Entra Logs</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-goto="connections">Manage Azure Connection</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  root.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="space-between" style="flex-wrap:wrap;gap:10px">
+        <div class="subtabs" style="margin-bottom:0;border:none">
+          <button type="button" class="subtab ${labCloud === "aws" ? "active" : ""}" data-lcloud="aws">
+            Amazon AWS <span class="badge ${connAws.connected ? "ok" : "warn"}" style="margin-left:6px">${connAws.connected ? "Online" : "Offline"}</span>
+          </button>
+          <button type="button" class="subtab ${labCloud === "gcp" ? "active" : ""}" data-lcloud="gcp">
+            Google Cloud (GCP) <span class="badge ${connGcp.connected ? "ok" : "warn"}" style="margin-left:6px">${connGcp.connected ? "Online" : "Offline"}</span>
+          </button>
+          <button type="button" class="subtab ${labCloud === "azure" ? "active" : ""}" data-lcloud="azure">
+            Microsoft Azure <span class="badge ${connAz.connected ? "ok" : "warn"}" style="margin-left:6px">${connAz.connected ? "Online" : "Offline"}</span>
+          </button>
+        </div>
+        <div class="row-flex">
+          <button type="button" class="btn btn-primary btn-sm" id="btn-run-mc-census">Multi-Cloud Census</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-run-doctor-all">Doctor (All 3 Clouds)</button>
+        </div>
+      </div>
+    </div>
+
+    ${labCloud === "aws" ? awsPanelHtml : labCloud === "gcp" ? gcpPanelHtml : azurePanelHtml}
 
     ${STATE.mcCensusData
       ? `
@@ -1644,7 +2122,7 @@ async function renderLab(root) {
       ? `
       <div class="card section-gap">
         <div class="card-header">
-          <h3 class="card-title">Doctor Checks</h3>
+          <h3 class="card-title">Doctor Checks (${esc(String(doc.cloud_provider || labCloud).toUpperCase())})</h3>
           <span class="badge ${doc.ok ? "ok" : "err"}">${doc.ok ? "OK" : "Issues"}</span>
         </div>
         <div class="table-wrap">
@@ -1662,10 +2140,11 @@ async function renderLab(root) {
       : ""
     }
 
-    ${STATE.probeData
+    ${STATE.probeData && probeCloud === labCloud
       ? STATE.probeData.error
         ? `<div class="notice err section-gap">${esc(STATE.probeData.error)}</div>`
-        : `
+        : probeCloud === "aws"
+          ? `
       <div class="card section-gap">
         <div class="card-header">
           <h3 class="card-title">Discovered AWS Inventory (${esc(STATE.probeData.region)})</h3>
@@ -1681,13 +2160,74 @@ async function renderLab(root) {
         <div class="table-wrap" style="max-height:280px;overflow:auto">
           <table>
             ${STATE.probeTab === "buckets"
-          ? `<thead><tr><th>Bucket</th><th>Scope</th><th></th></tr></thead><tbody>${(inv.buckets || []).map((b) => `<tr><td class="mono">${esc(b.name)}</td><td><span class="badge">${b.lab_owned ? "Lab" : "Account"}</span></td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="data_bucket" data-bind-val="${esc(b.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
-          : STATE.probeTab === "trails"
-            ? `<thead><tr><th>Trail</th><th>Status</th><th>Data Events</th><th>S3 Bucket</th><th></th></tr></thead><tbody>${(inv.trails || []).map((t) => `<tr><td class="mono">${esc(t.name)}</td><td><span class="badge ${t.is_logging ? "ok" : "err"}">${t.is_logging ? "Logging" : "Stopped"}</span></td><td><span class="badge ${t.s3_data_events ? "ok" : "warn"}">${t.s3_data_events ? "On" : "Off"}</span></td><td class="mono small-text">${esc(t.s3_bucket || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="trail_name" data-bind-val="${esc(t.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted-text">None found.</td></tr>`}</tbody>`
-            : STATE.probeTab === "ec2"
-              ? `<thead><tr><th>Instance ID</th><th>Name</th><th>State</th><th>SSM</th><th></th></tr></thead><tbody>${(inv.ec2_instances || []).map((i) => `<tr><td class="mono">${esc(i.instance_id)}</td><td>${esc(i.name)}</td><td><span class="badge ${i.state === "running" ? "ok" : "warn"}">${esc(i.state)}</span></td><td class="mono">${esc(i.ssm_status)}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="instance_id" data-bind-val="${esc(i.instance_id)}">Use</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted-text">None found.</td></tr>`}</tbody>`
-              : `<thead><tr><th>Queue</th><th>Messages</th><th></th></tr></thead><tbody>${(inv.queues || []).map((q) => `<tr><td class="mono">${esc(q.name)}</td><td class="mono">${q.messages_available ?? "-"}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="queue_url" data-bind-val="${esc(q.url)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
-        }
+              ? `<thead><tr><th>Bucket</th><th>Scope</th><th></th></tr></thead><tbody>${(inv.buckets || []).map((b) => `<tr><td class="mono">${esc(b.name)}</td><td><span class="badge">${b.lab_owned ? "Lab" : "Account"}</span></td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="data_bucket" data-bind-val="${esc(b.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
+              : STATE.probeTab === "trails"
+                ? `<thead><tr><th>Trail</th><th>Status</th><th>Data Events</th><th>S3 Bucket</th><th></th></tr></thead><tbody>${(inv.trails || []).map((t) => `<tr><td class="mono">${esc(t.name)}</td><td><span class="badge ${t.is_logging ? "ok" : "err"}">${t.is_logging ? "Logging" : "Stopped"}</span></td><td><span class="badge ${t.s3_data_events ? "ok" : "warn"}">${t.s3_data_events ? "On" : "Off"}</span></td><td class="mono small-text">${esc(t.s3_bucket || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="trail_name" data-bind-val="${esc(t.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted-text">None found.</td></tr>`}</tbody>`
+                : STATE.probeTab === "ec2"
+                  ? `<thead><tr><th>Instance ID</th><th>Name</th><th>State</th><th>SSM</th><th></th></tr></thead><tbody>${(inv.ec2_instances || []).map((i) => `<tr><td class="mono">${esc(i.instance_id)}</td><td>${esc(i.name)}</td><td><span class="badge ${i.state === "running" ? "ok" : "warn"}">${esc(i.state)}</span></td><td class="mono">${esc(i.ssm_status)}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="instance_id" data-bind-val="${esc(i.instance_id)}">Use</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted-text">None found.</td></tr>`}</tbody>`
+                  : `<thead><tr><th>Queue</th><th>Messages</th><th></th></tr></thead><tbody>${(inv.queues || []).map((q) => `<tr><td class="mono">${esc(q.name)}</td><td class="mono">${q.messages_available ?? "-"}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="queue_url" data-bind-val="${esc(q.url)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
+            }
+          </table>
+        </div>
+      </div>
+    `
+          : probeCloud === "gcp"
+            ? `
+      <div class="card section-gap">
+        <div class="card-header">
+          <h3 class="card-title">Discovered GCP Inventory (${esc(STATE.probeData.project_id || "GCP")})</h3>
+          <div style="width:220px">
+            <select id="probe-kind">
+              <option value="gcp_buckets" ${STATE.probeTab === "gcp_buckets" ? "selected" : ""}>GCS Buckets (${(inv.buckets || []).length})</option>
+              <option value="gcp_sas" ${STATE.probeTab === "gcp_sas" ? "selected" : ""}>Service Accounts (${(inv.service_accounts || []).length})</option>
+              <option value="gcp_secrets" ${STATE.probeTab === "gcp_secrets" ? "selected" : ""}>Secret Manager (${(inv.secrets || []).length})</option>
+              <option value="gcp_sinks" ${STATE.probeTab === "gcp_sinks" ? "selected" : ""}>Log Sinks (${(inv.log_sinks || []).length})</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:280px;overflow:auto">
+          <table>
+            ${STATE.probeTab === "gcp_sas"
+              ? `<thead><tr><th>Service Account</th><th>Display Name</th><th>Project</th><th></th></tr></thead><tbody>${(inv.service_accounts || []).map((sa) => `<tr><td class="mono">${esc(sa.email)}</td><td>${esc(sa.display_name || "-")}</td><td class="mono">${esc(sa.project)}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="gcp_service_account" data-bind-val="${esc(sa.email)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+              : STATE.probeTab === "gcp_secrets"
+                ? `<thead><tr><th>Secret</th><th>Resource Name</th><th>Project</th><th></th></tr></thead><tbody>${(inv.secrets || []).map((s) => `<tr><td class="mono">${esc(s.name)}</td><td class="mono small-text">${esc(s.full_name)}</td><td class="mono">${esc(s.project)}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="gcp_secret_name" data-bind-val="${esc(s.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+                : STATE.probeTab === "gcp_sinks"
+                  ? `<thead><tr><th>Sink Name</th><th>Destination</th><th>Project</th><th></th></tr></thead><tbody>${(inv.log_sinks || []).map((sk) => `<tr><td class="mono">${esc(sk.name)}</td><td class="mono small-text">${esc(sk.destination || "-")}</td><td class="mono">${esc(sk.project)}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="gcp_log_sink" data-bind-val="${esc(sk.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+                  : `<thead><tr><th>GCS Bucket</th><th>Project</th><th>Scope</th><th></th></tr></thead><tbody>${(inv.buckets || []).map((b) => `<tr><td class="mono">${esc(b.name)}</td><td class="mono">${esc(b.project)}</td><td><span class="badge">${esc(b.scope || "project")}</span></td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="gcp_bucket" data-bind-val="${esc(b.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+            }
+          </table>
+        </div>
+      </div>
+    `
+            : `
+      <div class="card section-gap">
+        <div class="card-header">
+          <h3 class="card-title">Discovered Azure &amp; Entra Inventory</h3>
+          <div style="width:230px">
+            <select id="probe-kind">
+              <option value="az_kv" ${STATE.probeTab === "az_kv" ? "selected" : ""}>Key Vaults (${(inv.key_vaults || []).length})</option>
+              <option value="az_storage" ${STATE.probeTab === "az_storage" ? "selected" : ""}>Storage Accounts (${(inv.storage_accounts || []).length})</option>
+              <option value="az_rg" ${STATE.probeTab === "az_rg" ? "selected" : ""}>Resource Groups (${(inv.resource_groups || []).length})</option>
+              <option value="az_vms" ${STATE.probeTab === "az_vms" ? "selected" : ""}>Compute VMs (${(inv.vms || []).length})</option>
+              <option value="az_subs" ${STATE.probeTab === "az_subs" ? "selected" : ""}>Subscriptions (${(inv.subscriptions || []).length})</option>
+              <option value="az_spns" ${STATE.probeTab === "az_spns" ? "selected" : ""}>Entra Service Principals (${(inv.service_principals || []).length})</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:280px;overflow:auto">
+          <table>
+            ${STATE.probeTab === "az_storage"
+              ? `<thead><tr><th>Storage Account</th><th>Resource Group</th><th>Location</th><th></th></tr></thead><tbody>${(inv.storage_accounts || []).map((s) => `<tr><td class="mono">${esc(s.name)}</td><td class="mono">${esc(s.resource_group || "-")}</td><td class="mono">${esc(s.location || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_storage_account" data-bind-val="${esc(s.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+              : STATE.probeTab === "az_rg"
+                ? `<thead><tr><th>Resource Group</th><th>Location</th><th></th></tr></thead><tbody>${(inv.resource_groups || []).map((g) => `<tr><td class="mono">${esc(g.name)}</td><td class="mono">${esc(g.location || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_resource_group" data-bind-val="${esc(g.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
+                : STATE.probeTab === "az_vms"
+                  ? `<thead><tr><th>VM Name</th><th>Resource Group</th><th>Location</th><th></th></tr></thead><tbody>${(inv.vms || []).map((v) => `<tr><td class="mono">${esc(v.name)}</td><td class="mono">${esc(v.resource_group || "-")}</td><td class="mono">${esc(v.location || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_vm_name" data-bind-val="${esc(v.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+                  : STATE.probeTab === "az_subs"
+                    ? `<thead><tr><th>Subscription ID</th><th>Name</th><th>State</th><th></th></tr></thead><tbody>${(inv.subscriptions || []).map((s) => `<tr><td class="mono">${esc(s.subscription_id)}</td><td>${esc(s.display_name || "-")}</td><td><span class="badge">${esc(s.state || "-")}</span></td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_subscription_id" data-bind-val="${esc(s.subscription_id)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+                    : STATE.probeTab === "az_spns"
+                      ? `<thead><tr><th>App / Client ID</th><th>Display Name</th><th></th></tr></thead><tbody>${(inv.service_principals || []).map((sp) => `<tr><td class="mono">${esc(sp.app_id)}</td><td>${esc(sp.display_name || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_spn_id" data-bind-val="${esc(sp.app_id)}">Use</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted-text">None found.</td></tr>`}</tbody>`
+                      : `<thead><tr><th>Key Vault</th><th>Resource Group</th><th>Location</th><th></th></tr></thead><tbody>${(inv.key_vaults || []).map((k) => `<tr><td class="mono">${esc(k.name)}</td><td class="mono">${esc(k.resource_group || "-")}</td><td class="mono">${esc(k.location || "-")}</td><td><button type="button" class="btn btn-secondary btn-sm" data-bind-field="azure_key_vault" data-bind-val="${esc(k.name)}">Use</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted-text">None found.</td></tr>`}</tbody>`
+            }
           </table>
         </div>
       </div>
@@ -1695,6 +2235,16 @@ async function renderLab(root) {
       : ""
     }
   `;
+
+  root.querySelectorAll("[data-lcloud]").forEach((btn) => {
+    btn.onclick = () => {
+      STATE.labCloud = btn.dataset.lcloud;
+      if (STATE.labCloud === "aws") STATE.probeTab = "buckets";
+      else if (STATE.labCloud === "gcp") STATE.probeTab = "gcp_buckets";
+      else STATE.probeTab = "az_kv";
+      renderCurrentView();
+    };
+  });
 
   const probeSelect = document.getElementById("probe-kind");
   if (probeSelect) {
@@ -1715,35 +2265,117 @@ async function renderLab(root) {
     };
   });
 
-  document.getElementById("btn-save-resources").onclick = async () => {
-    await api("/api/lab/resources", {
-      method: "POST",
-      body: JSON.stringify({
-        data_bucket: document.getElementById("res-bucket").value.trim(),
-        data_key: document.getElementById("res-key").value.trim(),
-        trail_name: document.getElementById("res-trail").value.trim(),
-        instance_id: document.getElementById("res-instance").value.trim(),
-        queue_url: document.getElementById("res-queue").value.trim(),
-        test_user_name: document.getElementById("res-user").value.trim(),
-        admin_role_name: document.getElementById("res-role").value.trim(),
-      }),
-    });
-    await refreshGlobalState();
-    toast("Targets saved");
-  };
+  const saveAwsBtn = document.getElementById("btn-save-resources");
+  if (saveAwsBtn) {
+    saveAwsBtn.onclick = async () => {
+      await api("/api/lab/resources", {
+        method: "POST",
+        body: JSON.stringify({
+          data_bucket: document.getElementById("res-bucket").value.trim(),
+          data_key: document.getElementById("res-key").value.trim(),
+          trail_name: document.getElementById("res-trail").value.trim(),
+          instance_id: document.getElementById("res-instance").value.trim(),
+          queue_url: document.getElementById("res-queue").value.trim(),
+          test_user_name: document.getElementById("res-user").value.trim(),
+          admin_role_name: document.getElementById("res-role").value.trim(),
+        }),
+      });
+      await refreshGlobalState();
+      toast("AWS targets saved");
+    };
+  }
 
-  document.getElementById("btn-run-probe").onclick = async (e) => {
-    e.target.disabled = true;
-    try {
-      STATE.probeData = await api("/api/lab/census", { method: "POST" });
-      toast(STATE.probeData.error ? STATE.probeData.error : "Resources discovered — check dropdowns", STATE.probeData.error ? "err" : "ok");
-      await renderCurrentView();
-    } catch (err) {
-      toast(err.message, "err");
-    } finally {
-      e.target.disabled = false;
-    }
-  };
+  const saveGcpBtn = document.getElementById("btn-save-gcp-resources");
+  if (saveGcpBtn) {
+    saveGcpBtn.onclick = async () => {
+      await api("/api/lab/resources", {
+        method: "POST",
+        body: JSON.stringify({
+          gcp_project_id: document.getElementById("res-gcp-project").value.trim(),
+          gcp_region: document.getElementById("res-gcp-region").value.trim(),
+          gcp_bucket: document.getElementById("res-gcp-bucket").value.trim(),
+          gcp_object_key: document.getElementById("res-gcp-key").value.trim(),
+          gcp_secret_name: document.getElementById("res-gcp-secret").value.trim(),
+          gcp_service_account: document.getElementById("res-gcp-sa").value.trim(),
+          gcp_log_sink: document.getElementById("res-gcp-sink").value.trim(),
+        }),
+      });
+      await refreshGlobalState();
+      toast("GCP targets saved");
+    };
+  }
+
+  const saveAzBtn = document.getElementById("btn-save-azure-resources");
+  if (saveAzBtn) {
+    saveAzBtn.onclick = async () => {
+      await api("/api/lab/resources", {
+        method: "POST",
+        body: JSON.stringify({
+          azure_subscription_id: document.getElementById("res-az-sub").value.trim(),
+          azure_location: document.getElementById("res-az-loc").value.trim(),
+          azure_resource_group: document.getElementById("res-az-rg").value.trim(),
+          azure_key_vault: document.getElementById("res-az-vault").value.trim(),
+          azure_secret_name: document.getElementById("res-az-secret").value.trim(),
+          azure_storage_account: document.getElementById("res-az-storage").value.trim(),
+          azure_vm_name: document.getElementById("res-az-vm").value.trim(),
+          azure_spn_id: document.getElementById("res-az-spn").value.trim(),
+        }),
+      });
+      await refreshGlobalState();
+      toast("Azure targets saved");
+    };
+  }
+
+  const runProbeBtn = document.getElementById("btn-run-probe");
+  if (runProbeBtn) {
+    runProbeBtn.onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        STATE.probeData = await api("/api/lab/census", {
+          method: "POST",
+          body: JSON.stringify({ cloud_provider: labCloud }),
+        });
+        toast(STATE.probeData.error ? STATE.probeData.error : `${labCloud.toUpperCase()} resources discovered`, STATE.probeData.error ? "err" : "ok");
+        await renderCurrentView();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        e.target.disabled = false;
+      }
+    };
+  }
+
+  const pullGcpLab = document.getElementById("btn-pull-gcp-lab");
+  if (pullGcpLab) {
+    pullGcpLab.onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        const out = await api("/api/clouds/pull", { method: "POST", body: JSON.stringify({ cloud_provider: "gcp", hours: 24, replay_rules: true }) });
+        await refreshGlobalState();
+        toast(`Pulled ${out.total_ingested} GCP Audit Log events`);
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        e.target.disabled = false;
+      }
+    };
+  }
+
+  const pullAzLab = document.getElementById("btn-pull-az-lab");
+  if (pullAzLab) {
+    pullAzLab.onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        const out = await api("/api/clouds/pull", { method: "POST", body: JSON.stringify({ cloud_provider: "azure", hours: 24, replay_rules: true }) });
+        await refreshGlobalState();
+        toast(`Pulled ${out.total_ingested} Azure / Entra events`);
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        e.target.disabled = false;
+      }
+    };
+  }
 
   document.getElementById("btn-run-mc-census").onclick = async (e) => {
     e.target.disabled = true;
@@ -1758,10 +2390,31 @@ async function renderLab(root) {
     }
   };
 
-  document.getElementById("btn-run-doctor").onclick = async (e) => {
+  const docSingle = document.getElementById("btn-run-doctor");
+  if (docSingle) {
+    docSingle.onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        STATE.doctorData = await api("/api/lab/doctor", {
+          method: "POST",
+          body: JSON.stringify({ cloud_provider: labCloud }),
+        });
+        await renderCurrentView();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        e.target.disabled = false;
+      }
+    };
+  }
+
+  document.getElementById("btn-run-doctor-all").onclick = async (e) => {
     e.target.disabled = true;
     try {
-      STATE.doctorData = await api("/api/lab/doctor", { method: "POST" });
+      STATE.doctorData = await api("/api/lab/doctor", {
+        method: "POST",
+        body: JSON.stringify({ cloud_provider: "all" }),
+      });
       await renderCurrentView();
     } catch (err) {
       toast(err.message, "err");
@@ -1770,43 +2423,55 @@ async function renderLab(root) {
     }
   };
 
-  document.getElementById("btn-tf-plan").onclick = async (e) => {
-    e.target.disabled = true;
-    const area = document.getElementById("tf-output-area");
-    area.innerHTML = `<div class="terminal">Running terraform plan...</div>`;
-    try {
-      const resPlan = await api("/api/lab/plan", { method: "POST", body: JSON.stringify({}) });
-      area.innerHTML = `<div class="terminal">${esc(resPlan.output || resPlan.error || "Done")}</div>`;
-      toast(resPlan.ok ? "Plan succeeded" : "Plan failed", resPlan.ok ? "ok" : "err");
-    } catch (err) {
-      area.innerHTML = `<div class="notice err">${esc(err.message)}</div>`;
-    } finally {
-      e.target.disabled = false;
-    }
-  };
+  const tfPlan = document.getElementById("btn-tf-plan");
+  if (tfPlan) {
+    tfPlan.onclick = async (e) => {
+      e.target.disabled = true;
+      const area = document.getElementById("tf-output-area");
+      area.innerHTML = `<div class="terminal">Running terraform plan...</div>`;
+      try {
+        const resPlan = await api("/api/lab/plan", { method: "POST", body: JSON.stringify({}) });
+        area.innerHTML = `<div class="terminal">${esc(resPlan.output || resPlan.error || "Done")}</div>`;
+        toast(resPlan.ok ? "Plan succeeded" : "Plan failed", resPlan.ok ? "ok" : "err");
+      } catch (err) {
+        area.innerHTML = `<div class="notice err">${esc(err.message)}</div>`;
+      } finally {
+        e.target.disabled = false;
+      }
+    };
+  }
 
-  document.getElementById("btn-tf-up").onclick = async () => {
-    if (!confirm("Deploy AWS lab resources with Terraform?")) return;
-    const resUp = await api("/api/lab/up", { method: "POST", body: JSON.stringify({}) });
-    attachJobStream(resUp.job_id, "lab-job-term", () => {
-      document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
-    });
-  };
+  const tfUp = document.getElementById("btn-tf-up");
+  if (tfUp) {
+    tfUp.onclick = async () => {
+      if (!confirm("Deploy AWS lab resources with Terraform?")) return;
+      const resUp = await api("/api/lab/up", { method: "POST", body: JSON.stringify({}) });
+      attachJobStream(resUp.job_id, "lab-job-term", () => {
+        document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
+      });
+    };
+  }
 
-  document.getElementById("btn-tf-down").onclick = async () => {
-    if (!confirm("Destroy lab resources and check for residue?")) return;
-    const resDown = await api("/api/lab/down", { method: "POST", body: JSON.stringify({ check_only: false }) });
-    attachJobStream(resDown.job_id, "lab-job-term", () => {
-      document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
-    });
-  };
+  const tfDown = document.getElementById("btn-tf-down");
+  if (tfDown) {
+    tfDown.onclick = async () => {
+      if (!confirm("Destroy AWS lab resources and check for residue?")) return;
+      const resDown = await api("/api/lab/down", { method: "POST", body: JSON.stringify({ check_only: false }) });
+      attachJobStream(resDown.job_id, "lab-job-term", () => {
+        document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
+      });
+    };
+  }
 
-  document.getElementById("btn-tf-check").onclick = async () => {
-    const resCheck = await api("/api/lab/down", { method: "POST", body: JSON.stringify({ check_only: true }) });
-    attachJobStream(resCheck.job_id, "lab-job-term", () => {
-      document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
-    });
-  };
+  const tfCheck = document.getElementById("btn-tf-check");
+  if (tfCheck) {
+    tfCheck.onclick = async () => {
+      const resCheck = await api("/api/lab/down", { method: "POST", body: JSON.stringify({ check_only: true }) });
+      attachJobStream(resCheck.job_id, "lab-job-term", () => {
+        document.getElementById("tf-output-area").innerHTML = `<div class="terminal" id="lab-job-term"></div>`;
+      });
+    };
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1830,12 +2495,12 @@ async function renderAttacks(root) {
         <td class="mono">${esc(a.tactic)}</td>
         <td class="mono small-text">${esc((a.event_names || []).join(", "))}</td>
         <td><span class="badge ${a.enabled ? "ok" : "warn"}">${a.enabled ? "Enabled" : "Disabled"}</span></td>
-        <td><span class="badge ${a.live_capability.available ? "ok" : "warn"}">${a.live_capability.available ? "Live OK" : (cp === "AWS" ? "Gated" : "Offline")}</span></td>
+        <td><span class="badge ${a.live_capability.available ? "ok" : "warn"}" title="${esc(a.live_capability.reason || "")}">${a.live_capability.available ? "Live Ready" : (cp === "AWS" ? "Gated" : "Offline (Synth OK)")}</span></td>
         <td class="mono">${a.variant_count}</td>
         <td>
           <div class="row-flex">
             <button type="button" class="btn btn-secondary btn-sm" data-inspect-attack="${esc(a.technique_id)}">Inspect</button>
-            ${isCat ? `<button type="button" class="btn btn-secondary btn-sm" data-toggle-attack="${esc(a.technique_id)}" data-next="${!a.enabled}">${a.enabled ? "Disable" : "Enable"}</button>` : `<span class="small-text muted-text">Multi-Cloud</span>`}
+            <button type="button" class="btn btn-secondary btn-sm" data-toggle-attack="${esc(a.technique_id)}" data-next="${!a.enabled}">${a.enabled ? "Disable" : "Enable"}</button>
             ${a.custom ? `<button type="button" class="btn btn-danger btn-sm" data-del-attack="${esc(a.technique_id)}">Delete</button>` : ""}
           </div>
         </td>
@@ -1845,30 +2510,59 @@ async function renderAttacks(root) {
     )
     .join("");
 
+  const addCloud = STATE.addAttackCloud || "aws";
+  const addSvcOpts = Object.keys(SERVICE_OPERATIONS).filter((s) =>
+    addCloud === "gcp" ? s.includes("googleapis.com") : addCloud === "azure" ? s.startsWith("Microsoft.") : (!s.includes("googleapis.com") && !s.startsWith("Microsoft."))
+  );
+  const defaultSvc = addCloud === "gcp" ? "iam.googleapis.com" : addCloud === "azure" ? "Microsoft.KeyVault" : "ec2";
+  const defaultOps = SERVICE_OPERATIONS[defaultSvc] || [];
+  const defaultOp = defaultOps[0] ? defaultOps[0].value : "describe_vpcs";
+  const defaultEv = defaultOps[0] ? defaultOps[0].hint : "DescribeVpcs";
+
   const addPanel = STATE.showAddAttack
     ? `
       <div class="card" style="margin-bottom:16px">
         <div class="card-header">
-          <h3 class="card-title">Add Custom Attack</h3>
+          <h3 class="card-title">Add Custom Multi-Cloud Attack</h3>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-close-add-attack">Cancel</button>
         </div>
 
         <div class="form-grid">
-          <div class="grid grid-3">
+          <div class="grid grid-4">
+            <div class="field">
+              <label>Cloud Provider</label>
+              <select id="add-cloud">
+                <option value="aws" ${addCloud === "aws" ? "selected" : ""}>Amazon AWS</option>
+                <option value="gcp" ${addCloud === "gcp" ? "selected" : ""}>Google Cloud (GCP)</option>
+                <option value="azure" ${addCloud === "azure" ? "selected" : ""}>Microsoft Azure</option>
+              </select>
+            </div>
             <div class="field">
               <label>Template Preset</label>
               <select id="atk-preset">
                 <option value="">Choose a preset (optional)...</option>
-                <option value="vpc_enum">VPC Discovery (ec2:describe_vpcs)</option>
-                <option value="s3_probe">S3 Bucket Probe (s3:head_bucket)</option>
-                <option value="secrets_enum">Secrets Manager List (secretsmanager:list_secrets)</option>
-                <option value="iam_policies">IAM Policy List (iam:list_policies)</option>
-                <option value="lambda_list">Lambda Functions List (lambda:list_functions)</option>
+                <optgroup label="AWS Presets">
+                  <option value="vpc_enum">AWS VPC Discovery (ec2:describe_vpcs)</option>
+                  <option value="s3_probe">AWS S3 Bucket Probe (s3:head_bucket)</option>
+                  <option value="secrets_enum">AWS Secrets List (secretsmanager:list_secrets)</option>
+                  <option value="iam_policies">AWS IAM Policy List (iam:list_policies)</option>
+                  <option value="lambda_list">AWS Lambda Functions (lambda:list_functions)</option>
+                </optgroup>
+                <optgroup label="GCP Presets">
+                  <option value="gcp_sa_key">GCP Service Account Key Create</option>
+                  <option value="gcp_secret">GCP Secret Manager Access</option>
+                  <option value="gcp_gcs">GCP GCS Bucket Exfiltration</option>
+                </optgroup>
+                <optgroup label="Azure Presets">
+                  <option value="azure_rbac">Azure RBAC Role Escalation</option>
+                  <option value="azure_kv">Azure Key Vault Secret Get</option>
+                  <option value="azure_vm">Azure VM Discovery</option>
+                </optgroup>
               </select>
             </div>
             <div class="field">
               <label>Technique ID</label>
-              ${comboHtml("add-tid", "T9001.custom", ["T9001.custom", "T1538", "T1589", "T1555.custom", "T1087.custom", "T1530.custom"], { mono: true })}
+              ${comboHtml("add-tid", addCloud === "gcp" ? "T1098.GCP09" : addCloud === "azure" ? "T1555.AZ09" : "T9001.custom", ["T9001.custom", "T1098.GCP09", "T1555.GCP09", "T1098.AZ09", "T1555.AZ09", "T1538", "T1555.custom"], { mono: true })}
             </div>
             <div class="field">
               <label>Tactic</label>
@@ -1888,22 +2582,22 @@ async function renderAttacks(root) {
           <div class="grid grid-3">
             <div class="field">
               <label>Attack Name</label>
-              <input id="add-name" placeholder="VPC Discovery" />
+              <input id="add-name" placeholder="Multi-Cloud Attack Name" />
             </div>
             <div class="field">
-              <label>AWS Service (boto3)</label>
-              ${comboHtml("add-svc", "ec2", Object.keys(SERVICE_OPERATIONS), { mono: true })}
+              <label>${addCloud === "aws" ? "AWS Service (boto3)" : addCloud === "gcp" ? "GCP Service Endpoint" : "Azure Resource Provider"}</label>
+              ${comboHtml("add-svc", defaultSvc, addSvcOpts, { mono: true })}
             </div>
             <div class="field">
-              <label>Boto3 Operation</label>
-              ${comboHtml("add-op", "describe_vpcs", SERVICE_OPERATIONS.ec2, { mono: true })}
+              <label>${addCloud === "aws" ? "Boto3 Operation" : "API Method / Operation"}</label>
+              ${comboHtml("add-op", defaultOp, defaultOps, { mono: true })}
             </div>
           </div>
 
           <div class="grid grid-3">
             <div class="field">
-              <label>CloudTrail Event Names</label>
-              ${comboHtml("add-events", "DescribeVpcs", ["DescribeVpcs", "ListSecrets", "HeadBucket", "ListPolicies", "ListFunctions"], { mono: true })}
+              <label>Audit Event Names</label>
+              ${comboHtml("add-events", defaultEv, ["DescribeVpcs", "ListSecrets", "HeadBucket", "google.iam.admin.v1.CreateServiceAccountKey", "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion", "SecretGet", "Microsoft.Authorization/roleAssignments/write"], { mono: true })}
             </div>
             <div class="field">
               <label>Parameters (JSON)</label>
@@ -1916,7 +2610,7 @@ async function renderAttacks(root) {
           </div>
 
           <div class="space-between">
-            <label class="check-pill"><input type="checkbox" id="add-data-events" /> Requires S3 Data Events</label>
+            <label class="check-pill"><input type="checkbox" id="add-data-events" /> Requires S3 / Data Access Audit Events</label>
             <button type="button" class="btn btn-primary" id="btn-add-attack">Save Attack & Generate Variants</button>
           </div>
         </div>
@@ -1968,17 +2662,22 @@ async function renderAttacks(root) {
       renderCurrentView();
     };
 
+    document.getElementById("add-cloud").onchange = (e) => {
+      STATE.addAttackCloud = e.target.value;
+      renderCurrentView();
+    };
+
     const syncServiceOps = () => {
-      const svc = document.getElementById("add-svc").value.trim().toLowerCase();
-      const ops = SERVICE_OPERATIONS[svc] || [];
+      const rawSvc = document.getElementById("add-svc").value.trim();
+      const ops = SERVICE_OPERATIONS[rawSvc] || SERVICE_OPERATIONS[rawSvc.toLowerCase()] || [];
       setComboOptions("add-op", ops);
       setComboOptions("add-events", ops.map((o) => o.hint));
     };
 
     document.getElementById("add-svc").onchange = () => {
       syncServiceOps();
-      const svc = document.getElementById("add-svc").value.trim().toLowerCase();
-      const ops = SERVICE_OPERATIONS[svc] || [];
+      const rawSvc = document.getElementById("add-svc").value.trim();
+      const ops = SERVICE_OPERATIONS[rawSvc] || SERVICE_OPERATIONS[rawSvc.toLowerCase()] || [];
       if (ops.length) {
         document.getElementById("add-op").value = ops[0].value;
         document.getElementById("add-events").value = ops[0].hint;
@@ -1986,13 +2685,16 @@ async function renderAttacks(root) {
     };
 
     document.getElementById("add-op").onchange = (e) => {
-      const ev = toCamelEvent(e.target.value);
+      const cp = document.getElementById("add-cloud").value;
+      const ev = cp === "aws" ? toCamelEvent(e.target.value) : e.target.value;
       if (ev) document.getElementById("add-events").value = ev;
     };
 
     document.getElementById("atk-preset").onchange = (e) => {
       const p = ATTACK_PRESETS[e.target.value];
       if (!p) return;
+      STATE.addAttackCloud = p.cloud_provider || "aws";
+      document.getElementById("add-cloud").value = STATE.addAttackCloud;
       document.getElementById("add-tid").value = p.technique_id;
       document.getElementById("add-name").value = p.name;
       document.getElementById("add-tactic").value = p.tactic;
@@ -2010,6 +2712,7 @@ async function renderAttacks(root) {
         await api("/api/attacks", {
           method: "POST",
           body: JSON.stringify({
+            cloud_provider: document.getElementById("add-cloud").value,
             technique_id: document.getElementById("add-tid").value.trim(),
             name: document.getElementById("add-name").value.trim(),
             tactic: document.getElementById("add-tactic").value,
@@ -2040,10 +2743,10 @@ async function renderAttacks(root) {
         `${atk.technique_id} — ${atk.name}`,
         `
         <div class="form-grid">
-          <div><span class="badge ${atk.enabled ? "ok" : "warn"}">${atk.enabled ? "Enabled" : "Disabled"}</span> <span class="badge ${atk.live_capability.available ? "ok" : "warn"}">${esc(atk.live_capability.reason)}</span></div>
+          <div><span class="badge">${esc((atk.cloud_provider || "aws").toUpperCase())}</span> <span class="badge ${atk.enabled ? "ok" : "warn"}">${atk.enabled ? "Enabled" : "Disabled"}</span> <span class="badge ${atk.live_capability.available ? "ok" : "warn"}">${esc(atk.live_capability.reason)}</span></div>
           <div class="field"><label>Executor</label><div class="mono">${esc(atk.executor)} (${esc(atk.executor_ref || "-")})</div></div>
-          <div class="field"><label>CloudTrail Events</label><div class="mono">${esc(atk.event_names.join(", "))}</div></div>
-          <div class="field"><label>Required IAM Actions</label><pre class="terminal">${esc(atk.required_actions.join("\n"))}</pre></div>
+          <div class="field"><label>Audit Events</label><div class="mono">${esc(atk.event_names.join(", "))}</div></div>
+          <div class="field"><label>Required Actions / Permissions</label><pre class="terminal">${esc(atk.required_actions.join("\n"))}</pre></div>
           <div class="field"><label>Success Verification</label><pre class="terminal">${esc(JSON.stringify(atk.success_check, null, 2))}</pre></div>
           ${atk.api_calls?.length ? `<div class="field"><label>API Calls</label><pre class="terminal">${esc(JSON.stringify(atk.api_calls, null, 2))}</pre></div>` : ""}
           <div class="field"><label>Mapped Sigma Rules (${atk.mapped_rules.length})</label>
@@ -2084,6 +2787,7 @@ async function renderAttacks(root) {
 
 async function renderVariants(root) {
   const qs = new URLSearchParams({ limit: "150" });
+  if (STATE.varFilterCloud && STATE.varFilterCloud !== "all") qs.set("cloud_provider", STATE.varFilterCloud);
   if (STATE.varFilterTech) qs.set("technique_id", STATE.varFilterTech);
   if (STATE.varFilterSet) qs.set("variant_set", STATE.varFilterSet);
   const [v, atkRes] = await Promise.all([api(`/api/variants?${qs.toString()}`), api("/api/attacks")]);
@@ -2091,12 +2795,14 @@ async function renderVariants(root) {
   const cov = v.coverage || {};
   const lc = cov.level_coverage || {};
   const pc = cov.pair_coverage || {};
-  const activeTechs = (atkRes.attacks || []).filter((a) => a.enabled && a.catalogue_backed !== false);
+  const activeTechs = (atkRes.attacks || []).filter(
+    (a) => a.enabled && (!STATE.varFilterCloud || STATE.varFilterCloud === "all" || (a.cloud_provider || "aws") === STATE.varFilterCloud)
+  );
 
   const techFilterOpts = [`<option value="">All Techniques</option>`]
     .concat(
       activeTechs.map(
-        (t) => `<option value="${esc(t.technique_id)}" ${STATE.varFilterTech === t.technique_id ? "selected" : ""}>${esc(t.technique_id)} — ${esc(t.name)}</option>`
+        (t) => `<option value="${esc(t.technique_id)}" ${STATE.varFilterTech === t.technique_id ? "selected" : ""}>[${esc((t.cloud_provider || "aws").toUpperCase())}] ${esc(t.technique_id)} — ${esc(t.name)}</option>`
       )
     )
     .join("");
@@ -2125,6 +2831,7 @@ async function renderVariants(root) {
       (row) => `
       <tr class="clickable" data-inspect-variant="${esc(row.variant_id)}">
         <td class="mono"><strong>${esc(row.variant_id)}</strong></td>
+        <td><span class="badge">${esc((row.cloud_provider || "aws").toUpperCase())}</span></td>
         <td class="mono">${esc(row.technique_id)}</td>
         <td><span class="badge ${row.variant_set === "baseline" ? "info" : row.variant_set === "benign" ? "ok" : ""}">${esc(row.variant_set)}</span></td>
         <td class="mono small-text">${esc(Object.entries(row.factor_levels).map(([k, val]) => `${k}=${val}`).join(" · "))}</td>
@@ -2164,7 +2871,7 @@ async function renderVariants(root) {
             </select>
           </div>
           <label class="check-pill" style="margin-top:18px"><input type="checkbox" id="var-pairwise" checked /> Pairwise</label>
-          <button type="button" class="btn btn-primary" style="margin-top:18px" id="btn-gen-variants">Generate</button>
+          <button type="button" class="btn btn-primary" style="margin-top:18px" id="btn-gen-variants">Generate All 3 Clouds</button>
         </div>
       </div>
     </div>
@@ -2173,7 +2880,7 @@ async function renderVariants(root) {
       <summary>Factor Definitions (5 Axes)</summary>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Factor</th><th>Baseline</th><th>Levels</th><th>CloudTrail Surface</th></tr></thead>
+          <thead><tr><th>Factor</th><th>Baseline</th><th>Levels</th><th>Audit Telemetry Surface</th></tr></thead>
           <tbody>${factorRows}</tbody>
         </table>
       </div>
@@ -2182,6 +2889,14 @@ async function renderVariants(root) {
     <div class="card">
       <div class="card-header">
         <div class="row-flex">
+          <div class="field" style="width:125px">
+            <select id="var-filter-cloud">
+              <option value="all" ${(STATE.varFilterCloud || "all") === "all" ? "selected" : ""}>All Clouds</option>
+              <option value="aws" ${STATE.varFilterCloud === "aws" ? "selected" : ""}>AWS</option>
+              <option value="gcp" ${STATE.varFilterCloud === "gcp" ? "selected" : ""}>GCP</option>
+              <option value="azure" ${STATE.varFilterCloud === "azure" ? "selected" : ""}>Azure</option>
+            </select>
+          </div>
           <div class="field" style="width:240px">
             <select id="var-filter-tech">${techFilterOpts}</select>
           </div>
@@ -2193,13 +2908,18 @@ async function renderVariants(root) {
       </div>
       <div class="table-wrap" style="max-height:440px;overflow:auto">
         <table>
-          <thead><tr><th>Variant ID</th><th>Technique</th><th>Set</th><th>Factors</th><th>Expected Log Change</th></tr></thead>
-          <tbody>${varRows || `<tr><td colspan="5" class="muted-text">No variants found. Click Generate above.</td></tr>`}</tbody>
+          <thead><tr><th>Variant ID</th><th>Cloud</th><th>Technique</th><th>Set</th><th>Factors</th><th>Expected Log Change</th></tr></thead>
+          <tbody>${varRows || `<tr><td colspan="6" class="muted-text">No variants found. Click Generate All 3 Clouds above.</td></tr>`}</tbody>
         </table>
       </div>
     </div>
   `;
 
+  document.getElementById("var-filter-cloud").onchange = (e) => {
+    STATE.varFilterCloud = e.target.value;
+    STATE.varFilterTech = "";
+    renderCurrentView();
+  };
   document.getElementById("var-filter-tech").onchange = (e) => {
     STATE.varFilterTech = e.target.value;
     renderCurrentView();
@@ -2218,6 +2938,7 @@ async function renderVariants(root) {
           master_seed: Number(document.getElementById("var-seed").value || 2026),
           holdout_per_technique: Number(document.getElementById("var-holdout").value || 3),
           include_pairwise: document.getElementById("var-pairwise").checked,
+          include_multicloud: true,
         }),
       });
       await refreshGlobalState();
@@ -2254,8 +2975,11 @@ async function renderCampaigns(root) {
   if (!STATE.closedLoopReport && clPreview.last_report) {
     STATE.closedLoopReport = clPreview.last_report;
   }
-  const enabledAttacks = (STATE.attacksData.attacks || []).filter((a) => a.enabled && a.catalogue_backed !== false);
-  const conn = STATE.app.connection || {};
+  const campCloud = STATE.campCloud || "all";
+  const allEnabled = (STATE.attacksData.attacks || []).filter((a) => a.enabled);
+  const enabledAttacks = allEnabled.filter((a) => campCloud === "all" || (a.cloud_provider || "aws") === campCloud);
+  const conns = STATE.app.connections || {};
+  const conn = conns.aws || STATE.app.connection || {};
   const rulesets = STATE.app.db?.rulesets || [];
   const clVectors = clPreview.vectors || [];
   const clReport = STATE.closedLoopReport;
@@ -2266,7 +2990,8 @@ async function renderCampaigns(root) {
     .map(
       (a) => `
       <label class="check-pill">
-        <input type="checkbox" class="camp-tech" value="${esc(a.technique_id)}" checked />
+        <input type="checkbox" class="camp-tech" value="${esc(a.technique_id)}" data-cloud="${esc(a.cloud_provider || "aws")}" checked />
+        <span class="badge">${esc((a.cloud_provider || "aws").toUpperCase())}</span>
         <span class="mono">${esc(a.technique_id)}</span>
         <span class="small-text">${esc(a.name)}</span>
       </label>
@@ -2277,7 +3002,17 @@ async function renderCampaigns(root) {
   root.innerHTML = `
     <div class="grid grid-2">
       <div class="card">
-        <div class="card-header"><h3 class="card-title">Run Configuration</h3></div>
+        <div class="card-header">
+          <h3 class="card-title">Run Configuration</h3>
+          <div style="width:125px">
+            <select id="camp-cloud">
+              <option value="all" ${campCloud === "all" ? "selected" : ""}>All Clouds</option>
+              <option value="aws" ${campCloud === "aws" ? "selected" : ""}>AWS</option>
+              <option value="gcp" ${campCloud === "gcp" ? "selected" : ""}>GCP</option>
+              <option value="azure" ${campCloud === "azure" ? "selected" : ""}>Azure</option>
+            </select>
+          </div>
+        </div>
 
         <div class="form-grid">
           <div class="grid grid-2">
@@ -2285,24 +3020,26 @@ async function renderCampaigns(root) {
               <label>Preset</label>
               <select id="camp-preset">
                 <option value="custom">Custom Selection</option>
-                <option value="quick">Quick Sample (T1530 · Synthetic)</option>
-                <option value="full">Full Benchmark (All Active · Synthetic)</option>
-                <option value="discovery">Discovery Only (T1087.004, T1526, T1580)</option>
+                <option value="quick">Quick AWS Sample (T1530 · Synthetic)</option>
+                <option value="quick_gcp">Quick GCP Sample (T1098.GCP01 · Synthetic)</option>
+                <option value="quick_azure">Quick Azure Sample (T1555.AZ06 · Synthetic)</option>
+                <option value="full">Full Multi-Cloud Benchmark (All Active)</option>
+                <option value="discovery">Discovery Only (T1087.004, T1526, T1580, .GCP01, .AZ01)</option>
               </select>
             </div>
             <div class="field">
               <label>Execution Mode</label>
               <select id="camp-mode">
-                <option value="synthetic">Synthetic (Offline Fixtures)</option>
-                <option value="live">Live AWS Lab</option>
+                <option value="synthetic">Synthetic Rehearsal (AWS · GCP · Azure)</option>
+                <option value="live">Live AWS Sandbox</option>
               </select>
             </div>
           </div>
 
           <div id="camp-live-warn" class="notice warn hidden">
             ${conn.connected
-      ? `Executing live against AWS account <strong>${esc(conn.account_id)}</strong>.`
-      : `AWS is offline. Connect in Connections before starting a live campaign.`
+      ? `Executing live against AWS account <strong>${esc(conn.account_id)}</strong> (GCP &amp; Azure execute via Synthetic Rehearsal or Live SIEM Log Pull).`
+      : `AWS is offline. Connect AWS in Connections for Live Sandbox runs, or use Synthetic Rehearsal for AWS, GCP &amp; Azure.`
     }
           </div>
 
@@ -2506,6 +3243,11 @@ async function renderCampaigns(root) {
     </div>
   `;
 
+  document.getElementById("camp-cloud").onchange = (e) => {
+    STATE.campCloud = e.target.value;
+    renderCurrentView();
+  };
+
   document.getElementById("camp-mode").onchange = (e) => {
     document.getElementById("camp-live-warn").classList.toggle("hidden", e.target.value !== "live");
   };
@@ -2523,32 +3265,55 @@ async function renderCampaigns(root) {
       document.getElementById("camp-mode").value = "synthetic";
       root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = c.value === "T1530"));
       root.querySelectorAll(".camp-set").forEach((c) => (c.checked = c.value !== "benign"));
+    } else if (val === "quick_gcp") {
+      document.getElementById("camp-mode").value = "synthetic";
+      if (document.getElementById("camp-ruleset").querySelector('option[value="multicloud-v1"]')) {
+        document.getElementById("camp-ruleset").value = "multicloud-v1";
+      }
+      root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = c.value === "T1098.GCP01"));
+      root.querySelectorAll(".camp-set").forEach((c) => (c.checked = c.value !== "benign"));
+    } else if (val === "quick_azure") {
+      document.getElementById("camp-mode").value = "synthetic";
+      if (document.getElementById("camp-ruleset").querySelector('option[value="multicloud-v1"]')) {
+        document.getElementById("camp-ruleset").value = "multicloud-v1";
+      }
+      root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = c.value === "T1555.AZ06"));
+      root.querySelectorAll(".camp-set").forEach((c) => (c.checked = c.value !== "benign"));
     } else if (val === "full") {
       document.getElementById("camp-mode").value = "synthetic";
       root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = true));
       root.querySelectorAll(".camp-set").forEach((c) => (c.checked = true));
     } else if (val === "discovery") {
-      root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = ["T1087.004", "T1526", "T1580"].includes(c.value)));
+      root.querySelectorAll(".camp-tech").forEach((c) => (c.checked = ["T1087.004", "T1526", "T1580", "T1580.GCP01", "T1580.AZ01"].includes(c.value)));
     }
     document.getElementById("camp-live-warn").classList.toggle("hidden", document.getElementById("camp-mode").value !== "live");
   };
 
   document.getElementById("btn-launch-camp").onclick = async () => {
     const isSynthetic = document.getElementById("camp-mode").value === "synthetic";
-    if (!isSynthetic && !conn.connected) {
-      toast("Connect AWS before running live campaign", "err");
-      return;
-    }
-    const techniques = Array.from(root.querySelectorAll(".camp-tech:checked")).map((c) => c.value);
+    const checkedBoxes = Array.from(root.querySelectorAll(".camp-tech:checked"));
+    const techniques = checkedBoxes.map((c) => c.value);
     const sets = Array.from(root.querySelectorAll(".camp-set:checked")).map((c) => c.value);
     if (!techniques.length || !sets.length) {
       toast("Select at least one technique and one variant set", "err");
       return;
     }
+    const pickedClouds = new Set(checkedBoxes.map((c) => c.dataset.cloud || "aws"));
+    if (!isSynthetic) {
+      if (pickedClouds.has("gcp") || pickedClouds.has("azure")) {
+        toast("Live sandbox execution supports AWS techniques only; select Synthetic Rehearsal for GCP/Azure", "err");
+        return;
+      }
+      if (!conn.connected) {
+        toast("Connect AWS before running live campaign", "err");
+        return;
+      }
+    }
     const res = await api("/api/campaigns/run", {
       method: "POST",
       body: JSON.stringify({
         synthetic: isSynthetic,
+        cloud_provider: campCloud,
         techniques,
         sets,
         repetitions: Number(document.getElementById("camp-reps").value || 1),
@@ -3135,7 +3900,19 @@ async function renderRules(root) {
     )
     .join("");
 
-  const presetRegions = ["eu-west-1", "us-east-1", "us-west-2", "eu-central-1", "ap-south-1", "ap-southeast-1"];
+  const presetRegions = [
+    "eu-west-1",
+    "us-east-1",
+    "us-west-2",
+    "eu-central-1",
+    "ap-south-1",
+    "us-central1",
+    "europe-west1",
+    "asia-south1",
+    "eastus",
+    "westeurope",
+    "centralindia",
+  ];
   const currentRegions = th.allowed_regions || [];
   const extraRegions = currentRegions.filter((r) => !presetRegions.includes(r)).join(", ");
 
@@ -3322,15 +4099,25 @@ async function renderRules(root) {
               <div class="field">
                 <label>Template</label>
                 <select id="rule-template">
-                  <option value="vpc">VPC Discovery (DescribeVpcs)</option>
-                  <option value="secrets">Secrets Enumeration (ListSecrets)</option>
-                  <option value="s3_probe">S3 Bucket Probe (HeadBucket)</option>
+                  <optgroup label="AWS CloudTrail">
+                    <option value="vpc">AWS VPC Discovery (DescribeVpcs)</option>
+                    <option value="secrets">AWS Secrets Enumeration (ListSecrets)</option>
+                    <option value="s3_probe">AWS S3 Bucket Probe (HeadBucket)</option>
+                  </optgroup>
+                  <optgroup label="GCP Cloud Audit">
+                    <option value="gcp_sa_key">GCP Service Account Key (CreateServiceAccountKey)</option>
+                    <option value="gcp_secret">GCP Secret Manager Access (AccessSecretVersion)</option>
+                  </optgroup>
+                  <optgroup label="Azure Activity & Entra">
+                    <option value="azure_kv">Azure Key Vault Secret (SecretGet / SecretList)</option>
+                    <option value="azure_rbac">Azure RBAC Write (roleAssignments/write)</option>
+                  </optgroup>
                   <option value="blank">Blank Template</option>
                 </select>
               </div>
               <div class="field">
                 <label>Filename</label>
-                ${comboHtml("rule-fname", "custom-vpc-enum.yml", ["custom-vpc-enum.yml", "custom-secrets-enum.yml", "custom-s3-probe.yml", "custom-rule.yml"], { mono: true })}
+                ${comboHtml("rule-fname", "custom-vpc-enum.yml", ["custom-vpc-enum.yml", "custom-secrets-enum.yml", "custom-s3-probe.yml", "custom-gcp-sa-key.yml", "custom-gcp-secret.yml", "custom-azure-keyvault.yml", "custom-azure-rbac.yml", "custom-rule.yml"], { mono: true })}
               </div>
             </div>
             <div class="field">
@@ -3393,7 +4180,7 @@ async function renderRules(root) {
         <div class="form-grid" style="max-width:760px">
           <div class="grid grid-2">
             <div class="field">
-              <label>Monthly AWS Budget (USD)</label>
+              <label>Monthly Cloud Lab Budget (USD)</label>
               ${comboHtml("th-budget", th.budget_usd ?? 50, ["10", "25", "50", "100", "250"], { mono: true, type: "number" })}
             </div>
             <div class="field">
@@ -3843,7 +4630,7 @@ async function renderLogs(root) {
               </select>
             </div>
             <div style="width:220px">
-              ${comboHtml("log-search", STATE.logsSearch, ["GetObject", "ListUsers", "DescribeInstances", "CreateAccessKey", "AssumeRole", "DescribeVpcs"], { placeholder: "Filter event, IP, agent..." })}
+              ${comboHtml("log-search", STATE.logsSearch, ["GetObject", "ListUsers", "CreateAccessKey", "AssumeRole", "CreateServiceAccountKey", "AccessSecretVersion", "SetIamPolicy", "SecretGet", "roleAssignments/write", "UserSignIn"], { placeholder: "Filter event, cloud, IP, identity..." })}
             </div>
             <label class="check-pill"><input type="checkbox" id="log-alerts-only" ${STATE.logsAlertsOnly ? "checked" : ""} /> Alerts only</label>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-filter-logs">Apply</button>
@@ -4005,15 +4792,21 @@ async function renderLogs(root) {
 
 function renderCli(root) {
   const presets = [
+    { value: "config connect --mode env_default", hint: "Connect AWS from environment / IAM" },
+    { value: "config connect-gcp --mode gcloud_adc", hint: "Connect GCP project / org" },
+    { value: "config connect-azure --mode az_cli", hint: "Connect Azure sub / tenant" },
+    { value: "logs pull --cloud connected --hours 24", hint: "Pull live SIEM logs (AWS/GCP/Azure)" },
     { value: "proxy status", hint: "Live proxy status" },
-    { value: "proxy simulate", hint: "Send live HTTP attack/clean burst" },
-    { value: "dynamic audit --ruleset baseline-v1", hint: "Audit hardcoded rules" },
-    { value: "dynamic enhance --ruleset baseline-v1", hint: "Build enhanced-v1 rules" },
+    { value: "proxy simulate --scenario multicloud_mixed", hint: "Send AWS/GCP/Azure/Web bursts via proxy" },
+    { value: "dynamic loop --mode both", hint: "Run closed-loop evasion verifier" },
+    { value: "dynamic audit --ruleset multicloud-v1", hint: "Audit multi-cloud rules" },
+    { value: "dynamic enhance --ruleset multicloud-v1", hint: "Build enhanced-v1 rules" },
+    { value: "dynamic siem-export --target gcp_logging", hint: "Export Sigma to SIEM queries" },
     { value: "dynamic list", hint: "List dynamic behavioral rules" },
     { value: "dynamic replay", hint: "Run dynamic detection on batch events" },
     { value: "lab doctor", hint: "Diagnostics" },
     { value: "lab status", hint: "Resource census" },
-    { value: "attacks list", hint: "Active techniques" },
+    { value: "attacks list --cloud all", hint: "All AWS/GCP/Azure attacks" },
     { value: "config show", hint: "Thresholds & targets" },
     { value: "variants generate", hint: "Build 5-factor variants" },
     { value: "runner preflight --variant-id T1530-ofat-000 --synthetic", hint: "Preflight test" },

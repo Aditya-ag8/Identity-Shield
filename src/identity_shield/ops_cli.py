@@ -26,11 +26,12 @@ def attacks_main(argv: list[str] | None = None) -> int:
     p_show.add_argument("--json", action="store_true")
 
     p_add = sub.add_parser("add", help="add a custom attack technique and regenerate variants")
-    p_add.add_argument("--id", required=True, dest="technique_id", help="e.g. T1538 or T9001.custom")
+    p_add.add_argument("--id", required=True, dest="technique_id", help="e.g. T1538, T9001.custom, or T9002.GCP01")
+    p_add.add_argument("--cloud", default="", choices=["", "aws", "gcp", "azure"], help="cloud provider (auto-inferred if omitted)")
     p_add.add_argument("--name", required=True)
     p_add.add_argument("--tactic", default="discovery")
-    p_add.add_argument("--events", required=True, help="comma-separated CloudTrail event names")
-    p_add.add_argument("--service", default="sts", help="AWS boto3 service name (e.g. ec2, iam, s3, sts)")
+    p_add.add_argument("--events", required=True, help="comma-separated audit event names")
+    p_add.add_argument("--service", default="sts", help="API service name (e.g. ec2, iam, iam.googleapis.com, Microsoft.KeyVault)")
     p_add.add_argument("--operation", default="get_caller_identity", help="boto3 client method name")
     p_add.add_argument("--kwargs", default="{}", help="JSON kwargs dict for the API operation")
     p_add.add_argument("--actions", default="", help="comma-separated IAM actions (optional)")
@@ -97,6 +98,7 @@ def attacks_main(argv: list[str] | None = None) -> int:
         res = service.add_custom_attack(
             {
                 "technique_id": args.technique_id,
+                "cloud_provider": args.cloud or None,
                 "name": args.name,
                 "tactic": args.tactic,
                 "event_names": args.events,
@@ -156,7 +158,7 @@ def config_main(argv: list[str] | None = None) -> int:
     p_thresh.add_argument("--allowed-regions", default=None, help="comma-separated AWS regions")
     p_thresh.add_argument("--json", action="store_true")
 
-    p_bind = sub.add_parser("bind", help="bind target client AWS resources for live testing")
+    p_bind = sub.add_parser("bind", help="bind target AWS, GCP, or Azure resources for live SIEM & testing")
     p_bind.add_argument("--region", default=None)
     p_bind.add_argument("--bucket", default=None)
     p_bind.add_argument("--key", default=None)
@@ -165,6 +167,21 @@ def config_main(argv: list[str] | None = None) -> int:
     p_bind.add_argument("--instance-id", default=None)
     p_bind.add_argument("--test-user", default=None)
     p_bind.add_argument("--admin-role", default=None)
+    p_bind.add_argument("--gcp-project", default=None)
+    p_bind.add_argument("--gcp-region", default=None)
+    p_bind.add_argument("--gcp-bucket", default=None)
+    p_bind.add_argument("--gcp-object-key", default=None)
+    p_bind.add_argument("--gcp-secret", default=None)
+    p_bind.add_argument("--gcp-sa", default=None)
+    p_bind.add_argument("--gcp-log-sink", default=None)
+    p_bind.add_argument("--azure-sub", default=None)
+    p_bind.add_argument("--azure-location", default=None)
+    p_bind.add_argument("--azure-rg", default=None)
+    p_bind.add_argument("--azure-vault", default=None)
+    p_bind.add_argument("--azure-secret", default=None)
+    p_bind.add_argument("--azure-storage", default=None)
+    p_bind.add_argument("--azure-vm", default=None)
+    p_bind.add_argument("--azure-spn", default=None)
     p_bind.add_argument("--json", action="store_true")
 
     p_conn = sub.add_parser("connect", help="test and save AWS connection descriptor (Profile, AssumeRole, or Env)")
@@ -259,6 +276,21 @@ def config_main(argv: list[str] | None = None) -> int:
             "instance_id": args.instance_id,
             "test_user_name": args.test_user,
             "admin_role_name": args.admin_role,
+            "gcp_project_id": args.gcp_project,
+            "gcp_region": args.gcp_region,
+            "gcp_bucket": args.gcp_bucket,
+            "gcp_object_key": args.gcp_object_key,
+            "gcp_secret_name": args.gcp_secret,
+            "gcp_service_account": args.gcp_sa,
+            "gcp_log_sink": args.gcp_log_sink,
+            "azure_subscription_id": args.azure_sub,
+            "azure_location": args.azure_location,
+            "azure_resource_group": args.azure_rg,
+            "azure_key_vault": args.azure_vault,
+            "azure_secret_name": args.azure_secret,
+            "azure_storage_account": args.azure_storage,
+            "azure_vm_name": args.azure_vm,
+            "azure_spn_id": args.azure_spn,
         }
         for k, v in mapping.items():
             if v is not None:

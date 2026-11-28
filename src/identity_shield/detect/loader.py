@@ -41,13 +41,18 @@ TECHNIQUE_COLUMNS = (
 )
 
 
-def load_techniques(conn, path: Path | None = None) -> int:
+def load_techniques(conn, path: Path | None = None, *, include_multicloud: bool = False) -> int:
     source_path = path or config.TECHNIQUES_YAML
     document = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
     entries = list(document.get("techniques") or [])
 
     if path is None:
         from identity_shield import settings
+
+        if include_multicloud and config.MULTICLOUD_TECHNIQUES_YAML.is_file():
+            mc_doc = yaml.safe_load(config.MULTICLOUD_TECHNIQUES_YAML.read_text(encoding="utf-8")) or {}
+            if isinstance(mc_doc, dict) and isinstance(mc_doc.get("techniques"), list):
+                entries.extend(mc_doc["techniques"])
 
         overrides = settings.load_attack_overrides()
         by_id = {str(item["technique_id"]): item for item in entries}

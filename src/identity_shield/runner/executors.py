@@ -403,12 +403,27 @@ class SyntheticExecutor:
                 start=ctx.started_at,
             )
         else:
-            events = synthetic_events(
-                ctx.technique,
-                ctx.variant,
-                run_id=ctx.run_id,
-                start=ctx.started_at,
-            )
+            cloud = str(getattr(ctx.technique, "cloud_provider", "") or "").strip().lower()
+            if not cloud:
+                cloud = "gcp" if ".GCP" in ctx.technique.technique_id else ("azure" if ".AZ" in ctx.technique.technique_id else "aws")
+            if cloud in {"gcp", "azure"}:
+                from identity_shield.runner.synthetic import multicloud_synthetic_events
+
+                events = multicloud_synthetic_events(
+                    ctx.technique,
+                    ctx.variant,
+                    cloud_provider=cloud,
+                    account_scope=ctx.account_id if cloud == "gcp" or ctx.account_id != "123456789012" else "",
+                    run_id=ctx.run_id,
+                    start=ctx.started_at,
+                )
+            else:
+                events = synthetic_events(
+                    ctx.technique,
+                    ctx.variant,
+                    run_id=ctx.run_id,
+                    start=ctx.started_at,
+                )
         return ExecutionResult(
             ok=True,
             evidence={"synthetic": True, "events": len(events)},

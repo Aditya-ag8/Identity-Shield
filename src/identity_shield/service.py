@@ -71,7 +71,7 @@ def ensure_database(db_path: Path | None = None) -> Path:
         ensure_tables(conn)
         t_count = conn.execute("SELECT COUNT(*) FROM technique").fetchone()[0]
         if t_count == 0:
-            detect_loader.load_techniques(conn)
+            detect_loader.load_techniques(conn, include_multicloud=True)
         existing_rs = {
             r[0] for r in conn.execute("SELECT ruleset_version FROM ruleset").fetchall()
         }
@@ -301,6 +301,15 @@ def list_local_cloud_profiles() -> dict[str, Any]:
 def connect_gcp(payload: Mapping[str, Any]) -> dict[str, Any]:
     verified = cloud_connect.verify_and_connect_gcp(payload)
     desc = settings.update_gcp_connection_descriptor(verified["descriptor"]).to_dict()
+    res_updates: dict[str, Any] = {}
+    if desc.get("project_id") or (verified.get("identity") or {}).get("project_id"):
+        res_updates["gcp_project_id"] = desc.get("project_id") or (verified.get("identity") or {}).get("project_id")
+    if desc.get("region"):
+        res_updates["gcp_region"] = desc["region"]
+    if desc.get("service_account"):
+        res_updates["gcp_service_account"] = desc["service_account"]
+    if res_updates:
+        settings.update_resources(res_updates)
     settings.RUNTIME_SESSION.set_cloud_connection(
         "gcp",
         descriptor=desc,
@@ -318,6 +327,15 @@ def disconnect_gcp() -> dict[str, Any]:
 def connect_azure(payload: Mapping[str, Any]) -> dict[str, Any]:
     verified = cloud_connect.verify_and_connect_azure(payload)
     desc = settings.update_azure_connection_descriptor(verified["descriptor"]).to_dict()
+    res_updates: dict[str, Any] = {}
+    if desc.get("subscription_id") or (verified.get("identity") or {}).get("subscription_id"):
+        res_updates["azure_subscription_id"] = desc.get("subscription_id") or (verified.get("identity") or {}).get("subscription_id")
+    if desc.get("location"):
+        res_updates["azure_location"] = desc["location"]
+    if desc.get("client_id"):
+        res_updates["azure_spn_id"] = desc["client_id"]
+    if res_updates:
+        settings.update_resources(res_updates)
     settings.RUNTIME_SESSION.set_cloud_connection(
         "azure",
         descriptor=desc,
@@ -394,21 +412,147 @@ def customer_onboarding_templates() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def run_lab_doctor() -> dict[str, Any]:
+def run_lab_doctor(cloud_provider: str = "all") -> dict[str, Any]:
+    cp = str(cloud_provider or "all").strip().lower()
+    if cp not in {"all", "aws", "gcp", "azure"}:
+        cp = "all"
     guarded, _, region, _ = resolve_sessions()
-    report = doctor_module.run_doctor(session=guarded, region=region)
-    return report.to_dict()
+    statuses = settings.RUNTIME_SESSION.all_statuses()
+    bound_dict = settings.get_resources().to_dict()
+
+    aws_rep = doctor_module.run_doctor(session=guarded, region=region).to_dict()
+    gcp_rep = doctor_module.run_gcp_doctor(connection_status=statuses.get("gcp"), bound=bound_dict).to_dict()
+    az_rep = doctor_module.run_azure_doctor(connection_status=statuses.get("azure"), bound=bound_dict).to_dict()
+    by_cloud = {"aws": aws_rep, "gcp": gcp_rep, "azure": az_rep}
+
+    if cp in {"aws", "gcp", "azure"}:
+        chosen = dict(by_cloud[cp])
+        chosen["cloud_provider"] = cp
+        chosen["by_cloud"] = by_cloud
+        return chosen
+
+    combined_checks = []
+    for key in ("aws", "gcp", "azure"):
+        for c in by_cloud[key]["checks"]:
+            combined_checks.append({**c, "cloud_provider": key, "name": f"[{key.upper()}] {c['name']}"})
+    failures = [c for c in combined_checks if c["status"] == "fail"]
+    warnings = [c for c in combined_checks if c["status"] == "warn"]
+    return {
+        "cloud_provider": "all",
+        "generated_at": aws_rep["generated_at"],
+        "region": aws_rep["region"],
+        "ok": len(failures) == 0,
+        "failures": len(failures),
+        "warnings": len(warnings),
+        "checks": combined_checks,
+        "by_cloud": by_cloud,
+    }
 
 
-def run_live_resource_probe() -> dict[str, Any]:
-    guarded, _, region, _ = resolve_sessions()
+def run_live_resource_probe(cloud_provider: str = "aws") -> dict[str, Any]:
+    cp = str(cloud_provider or "aws").strip().lower()
     bound = settings.get_resources()
+
+    if cp == "gcp":
+        st = settings.RUNTIME_SESSION.provider_status("gcp")
+        mat = settings.RUNTIME_SESSION.get_provider_material("gcp") or {}
+        if not st.get("connected") or not mat.get("access_token"):
+            return {
+                "connected": False,
+                "cloud_provider": "gcp",
+                "error": "No active GCP session connected. Connect GCP in Connections first.",
+                "bound": bound.to_dict(),
+            }
+        desc = st.get("descriptor") or {}
+        ident = st.get("identity") or {}
+        proj = str(
+            bound.gcp_project_id
+            or desc.get("project_id")
+            or ident.get("project_id")
+            or ((ident.get("projects") or [{}])[0].get("project_id") if ident.get("projects") else "")
+            or ""
+        )
+        census = cloud_connect.collect_gcp_census(
+            access_token=str(mat["access_token"]),
+            project_id=proj,
+        )
+        from identity_shield.variants.closed_loop import save_multicloud_inventory
+
+        save_multicloud_inventory(census)
+        inv = {
+            "buckets": [{"name": str(b), "project": proj, "scope": "project"} for b in (census.get("buckets") or [])],
+            "service_accounts": [{"email": str(sa), "display_name": "", "project": proj} for sa in (census.get("service_accounts") or [])],
+            "secrets": [{"name": str(s).split("/")[-1], "full_name": str(s), "project": proj} for s in (census.get("secrets") or [])],
+            "log_sinks": [],
+        }
+        return {
+            "connected": True,
+            "cloud_provider": "gcp",
+            "project_id": proj,
+            "region": bound.gcp_region or desc.get("region") or "us-central1",
+            "generated_at": _utc_now(),
+            "census": census,
+            "inventory": inv,
+            "bound": bound.to_dict(),
+        }
+
+    if cp == "azure":
+        st = settings.RUNTIME_SESSION.provider_status("azure")
+        mat = settings.RUNTIME_SESSION.get_provider_material("azure") or {}
+        if not st.get("connected") or not (mat.get("access_token") or mat.get("graph_token")):
+            return {
+                "connected": False,
+                "cloud_provider": "azure",
+                "error": "No active Azure / Entra session connected. Connect Azure in Connections first.",
+                "bound": bound.to_dict(),
+            }
+        desc = st.get("descriptor") or {}
+        ident = st.get("identity") or {}
+        sub_id = str(
+            bound.azure_subscription_id
+            or desc.get("subscription_id")
+            or ident.get("subscription_id")
+            or ((ident.get("subscriptions") or [{}])[0].get("subscription_id") if ident.get("subscriptions") else "")
+            or ""
+        )
+        census = cloud_connect.collect_azure_census(
+            arm_token=str(mat.get("access_token") or ""),
+            subscription_id=sub_id,
+            tenant_id=str(desc.get("tenant_id") or ident.get("tenant_id") or ""),
+        )
+        from identity_shield.variants.closed_loop import save_multicloud_inventory
+
+        save_multicloud_inventory(census)
+        subs = list(ident.get("subscriptions") or [])
+        if not subs and sub_id:
+            subs = [{"subscription_id": sub_id, "display_name": sub_id, "state": "Enabled"}]
+        inv = {
+            "subscriptions": [{"subscription_id": str(s.get("subscription_id") or ""), "display_name": str(s.get("display_name") or ""), "state": str(s.get("state") or "")} for s in subs if isinstance(s, Mapping)],
+            "resource_groups": [{"name": str(rg), "location": bound.azure_location or "eastus"} for rg in (census.get("resource_groups") or [])],
+            "key_vaults": [{"name": str(kv), "resource_group": "", "location": bound.azure_location or "eastus"} for kv in (census.get("key_vaults") or [])],
+            "storage_accounts": [{"name": str(sa), "resource_group": "", "location": bound.azure_location or "eastus"} for sa in (census.get("storage_accounts") or [])],
+            "vms": [{"name": str(vm), "resource_group": "", "location": bound.azure_location or "eastus"} for vm in (census.get("vms") or [])],
+            "service_principals": [],
+        }
+        return {
+            "connected": True,
+            "cloud_provider": "azure",
+            "subscription_id": sub_id,
+            "region": bound.azure_location or desc.get("location") or "eastus",
+            "generated_at": _utc_now(),
+            "census": census,
+            "inventory": inv,
+            "bound": bound.to_dict(),
+        }
+
+    guarded, _, region, _ = resolve_sessions()
     conn_status = settings.RUNTIME_SESSION.status()
     account_id = conn_status.get("account_id") if conn_status.get("connected") else None
 
     if not guarded.has_credentials():
         return {
             "connected": False,
+            "cloud_provider": "aws",
             "error": "No active AWS credentials resolved. Connect via Profile, STS AssumeRole, or Session Keys first.",
             "bound": bound.to_dict(),
             "terraform_outputs": _safe_tf_outputs(),
@@ -424,6 +568,7 @@ def run_live_resource_probe() -> dict[str, Any]:
     tf_outputs = _safe_tf_outputs()
     return {
         "connected": True,
+        "cloud_provider": "aws",
         "account_id": census.account_id,
         "region": census.region,
         "generated_at": census.generated_at,
@@ -494,8 +639,14 @@ def _terraform_variables(
 # ---------------------------------------------------------------------------
 
 
-def _sync_variants_for_catalogue(db_path: Path, *, include_benign: bool = True, master_seed: int = 2026) -> dict[str, Any]:
-    catalogue = load_catalogue()
+def _sync_variants_for_catalogue(
+    db_path: Path,
+    *,
+    include_benign: bool = True,
+    master_seed: int = 2026,
+    include_multicloud: bool = True,
+) -> dict[str, Any]:
+    catalogue = load_catalogue(include_multicloud=include_multicloud)
     result = generate(catalogue, GenerationOptions(master_seed=master_seed))
     variants = list(result.variants)
 
@@ -515,7 +666,7 @@ def _sync_variants_for_catalogue(db_path: Path, *, include_benign: bool = True, 
 
     conn = connect(db_path)
     try:
-        detect_loader.load_techniques(conn)
+        detect_loader.load_techniques(conn, include_multicloud=include_multicloud)
         stale = persist_variants(conn, variants, catalogue, prune=False)
         if benign_rows:
             persist_variants(conn, benign_rows, catalogue, prune=False)
@@ -538,13 +689,14 @@ def list_attacks_overview(
     *,
     cloud_provider: str = "",
 ) -> dict[str, Any]:
-    """Return rich inventory of all attacks (enabled + disabled + custom + multi-cloud) with rule mapping."""
+    """Return rich inventory of all attacks (AWS, GCP, Azure, disabled, custom) with rule mapping."""
     path = ensure_database(db_path)
-    full_catalogue = load_catalogue(include_disabled=True)
+    full_catalogue = load_catalogue(include_disabled=True, include_multicloud=True)
     bound = settings.get_resources()
     thresholds = settings.get_thresholds()
     overrides = settings.load_attack_overrides()
     disabled_set = {t.upper() for t in overrides.get("disabled_techniques") or []}
+    statuses = settings.RUNTIME_SESSION.all_statuses()
 
     lab_cfg = {
         **bound.to_dict(),
@@ -575,15 +727,32 @@ def list_attacks_overview(
     items = []
     for tech in full_catalogue.techniques:
         enabled = tech.technique_id.upper() not in disabled_set
-        cap_live = check_technique_capability(
-            tech.technique_id, lab_cfg, synthetic=False, technique=tech
-        )
+        cp = str(tech.cloud_provider or "aws").strip().lower()
+        if cp == "aws":
+            cap_live = check_technique_capability(
+                tech.technique_id, lab_cfg, synthetic=False, technique=tech
+            ).to_dict()
+        else:
+            mc_conn = bool((statuses.get(cp) or {}).get("connected"))
+            svcs = [str(c.get("service") or "") for c in tech.api_calls if c.get("service")]
+            cap_live = {
+                "technique_id": tech.technique_id,
+                "available": mc_conn,
+                "reason": (
+                    f"{cp.upper()} session connected — ready for synthetic rehearsal, live SIEM pull & closed-loop testing."
+                    if mc_conn
+                    else f"Synthetic rehearsal & closed-loop testing ready; connect {cp.upper()} in Connections for live SIEM & census integration."
+                ),
+                "required_services": svcs,
+                "telemetry_dependency": "gcp_audit_logs" if cp == "gcp" else "azure_activity_and_entra",
+                "limitations": "Multi-cloud execution runs via Synthetic Rehearsal, Live SIEM pull, and Closed-Loop Proxy.",
+            }
         items.append(
             {
                 "technique_id": tech.technique_id,
                 "name": tech.name,
                 "tactic": tech.tactic,
-                "cloud_provider": "aws",
+                "cloud_provider": cp,
                 "catalogue_backed": True,
                 "executor": tech.executor,
                 "executor_ref": tech.executor_ref,
@@ -597,59 +766,11 @@ def list_attacks_overview(
                 "notes": tech.notes,
                 "custom": tech.custom,
                 "enabled": enabled,
-                "live_capability": cap_live.to_dict(),
+                "live_capability": cap_live,
                 "variant_count": variant_counts.get(tech.technique_id, 0),
                 "mapped_rules": rules_by_tech.get(tech.technique_id, []),
             }
         )
-
-    # Surface multi-cloud (GCP / Azure) technique definitions alongside AWS without mutating AWS default variants
-    seen_ids = {it["technique_id"] for it in items}
-    if config.MULTICLOUD_TECHNIQUES_YAML.is_file():
-        try:
-            mc_doc = yaml.safe_load(config.MULTICLOUD_TECHNIQUES_YAML.read_text(encoding="utf-8")) or {}
-        except Exception:
-            mc_doc = {}
-        for raw_t in mc_doc.get("techniques") or []:
-            if not isinstance(raw_t, Mapping):
-                continue
-            tid = str(raw_t.get("technique_id") or "").strip()
-            if not tid or tid in seen_ids:
-                continue
-            seen_ids.add(tid)
-            cp = str(raw_t.get("cloud_provider") or ("gcp" if ".GCP" in tid else "azure")).strip().lower()
-            svc = str(raw_t.get("service") or "").strip()
-            items.append(
-                {
-                    "technique_id": tid,
-                    "name": str(raw_t.get("name") or tid),
-                    "tactic": str(raw_t.get("tactic") or "discovery"),
-                    "cloud_provider": cp,
-                    "catalogue_backed": False,
-                    "executor": f"{cp}_synthetic",
-                    "executor_ref": None,
-                    "event_names": list(raw_t.get("event_names") or []),
-                    "required_actions": list(raw_t.get("required_actions") or []),
-                    "requires_data_events": False,
-                    "excluded_levels": {},
-                    "baseline_levels": {},
-                    "success_check": {},
-                    "api_calls": [{"service": svc, "operation": str((raw_t.get("event_names") or [""])[0])}] if svc else [],
-                    "notes": str(raw_t.get("notes") or f"Multi-cloud {cp.upper()} detection/closed-loop technique."),
-                    "custom": False,
-                    "enabled": True,
-                    "live_capability": {
-                        "technique_id": tid,
-                        "available": False,
-                        "reason": f"Offline synthetic, log ingestion & closed-loop proxy support ({cp.upper()}); live {cp.upper()} execution requires external SDK setup.",
-                        "required_services": [svc] if svc else [],
-                        "telemetry_dependency": "audit_logs",
-                        "limitations": "Offline-first multi-cloud pack.",
-                    },
-                    "variant_count": variant_counts.get(tid, 0),
-                    "mapped_rules": rules_by_tech.get(tid, []),
-                }
-            )
 
     cloud_filter = str(cloud_provider or "").strip().lower()
     if cloud_filter and cloud_filter != "all":
@@ -676,7 +797,7 @@ def add_custom_attack(payload: Mapping[str, Any], *, db_path: Path | None = None
     clean = settings.add_or_update_custom_attack(payload)
     # Validate merged catalogue immediately
     try:
-        load_catalogue()
+        load_catalogue(include_multicloud=True)
     except Exception:
         # Roll back on catalogue validation failure
         settings.remove_attack(clean["technique_id"])
@@ -705,9 +826,10 @@ def generate_all_variants(
     master_seed: int = 2026,
     holdout_per_technique: int = 3,
     include_pairwise: bool = True,
+    include_multicloud: bool = True,
 ) -> dict[str, Any]:
     path = ensure_database(db_path)
-    catalogue = load_catalogue()
+    catalogue = load_catalogue(include_multicloud=include_multicloud)
     result = generate(
         catalogue,
         GenerationOptions(
@@ -731,7 +853,7 @@ def generate_all_variants(
 
     conn = connect(path)
     try:
-        detect_loader.load_techniques(conn)
+        detect_loader.load_techniques(conn, include_multicloud=include_multicloud)
         stale = persist_variants(conn, variants, catalogue, prune=False)
         persist_variants(conn, benign_rows, catalogue, prune=False)
     finally:
@@ -753,7 +875,7 @@ def get_variants_view(
     cloud_provider: str = "",
     limit: int = 200,
 ) -> dict[str, Any]:
-    catalogue = load_catalogue()
+    catalogue = load_catalogue(include_multicloud=True)
     factors = _factors_payload()
     cov_path = config.VARIANTS_DIR / "coverage.json"
     coverage = json.loads(cov_path.read_text(encoding="utf-8")) if cov_path.exists() else None
@@ -767,6 +889,7 @@ def get_variants_view(
     if b_path.exists():
         rows.extend(read_variants(b_path, include_holdout=True))
 
+    tech_clouds = {t.technique_id: str(t.cloud_provider or "aws").lower() for t in catalogue.techniques}
     total_count = len(rows)
     if technique_id:
         rows = [v for v in rows if v.technique_id == technique_id]
@@ -777,10 +900,8 @@ def get_variants_view(
         rows = [
             v
             for v in rows
-            if (
-                ("gcp" if ".GCP" in v.technique_id else ("azure" if ".AZ" in v.technique_id else "aws"))
-                == cloud_filter
-            )
+            if tech_clouds.get(v.technique_id, ("gcp" if ".GCP" in v.technique_id else ("azure" if ".AZ" in v.technique_id else "aws")))
+            == cloud_filter
         ]
 
     serialized = []
@@ -791,11 +912,12 @@ def get_variants_view(
             if tech is not None and v.variant_set not in {"baseline", "benign"}
             else []
         )
+        cp = tech.cloud_provider if tech is not None else ("gcp" if ".GCP" in v.technique_id else ("azure" if ".AZ" in v.technique_id else "aws"))
         serialized.append(
             {
                 "variant_id": v.variant_id,
                 "technique_id": v.technique_id,
-                "cloud_provider": "gcp" if ".GCP" in v.technique_id else ("azure" if ".AZ" in v.technique_id else "aws"),
+                "cloud_provider": cp,
                 "variant_set": v.variant_set,
                 "factor_levels": dict(v.factor_levels),
                 "expected_surface": expected_surface,
@@ -1300,21 +1422,29 @@ def start_campaign_job(payload: Mapping[str, Any], *, db_path: Path | None = Non
     synthetic = bool(payload.get("synthetic", True))
     sets = list(payload.get("sets") or ["baseline", "ofat", "pairwise"])
     techniques = [str(t).upper() for t in (payload.get("techniques") or []) if str(t).strip()]
+    cloud_filter = str(payload.get("cloud_provider") or "all").strip().lower()
     repetitions = max(1, min(10, int(payload.get("repetitions") or 1)))
     ruleset = str(payload.get("ruleset") or "baseline-v1")
     force = bool(payload.get("force", False))
 
-    mode_label = "Synthetic Rehearsal" if synthetic else "Live AWS Lab Campaign"
-    title = f"{mode_label} ({', '.join(techniques) if techniques else 'all active'})"
+    mode_label = "Synthetic Rehearsal" if synthetic else "Live Cloud Campaign"
+    scope_desc = ", ".join(techniques) if techniques else (f"all {cloud_filter.upper()}" if cloud_filter in {"aws", "gcp", "azure"} else "all active")
+    title = f"{mode_label} ({scope_desc})"
 
     def task(log) -> dict[str, Any]:
         log(f"Starting {mode_label}...")
-        catalogue = load_catalogue()
+        catalogue = load_catalogue(include_multicloud=True)
         if not catalogue.techniques:
             raise RuntimeError("No attacks are enabled in the catalogue.")
 
-        # Sync variants cleanly so custom/active attacks have variants ready
-        sync_res = _sync_variants_for_catalogue(path)
+        target_techs = list(techniques)
+        if not target_techs and cloud_filter in {"aws", "gcp", "azure"}:
+            target_techs = [t.technique_id for t in catalogue.techniques if str(t.cloud_provider or "aws").lower() == cloud_filter]
+            if not target_techs:
+                raise RuntimeError(f"No enabled techniques found for cloud={cloud_filter}.")
+
+        # Sync variants cleanly so custom and multi-cloud attacks have variants ready
+        sync_res = _sync_variants_for_catalogue(path, include_multicloud=True)
         log(f"Variants synchronized: {sync_res.get('variants_total')} attack, {sync_res.get('benign_total')} benign.")
 
         from identity_shield.runner.cli import _select
@@ -1322,22 +1452,35 @@ def start_campaign_job(payload: Mapping[str, Any], *, db_path: Path | None = Non
         selected = _select(
             catalogue,
             sets=sets,
-            techniques=techniques or None,
+            techniques=target_techs or None,
             include_holdout=False,
         )
         if not selected:
             raise RuntimeError("No variants matched the selected technique/set filters.")
-        log(f"Selected {len(selected)} variant(s) x {repetitions} repetition(s).")
+        selected_clouds = {str(catalogue.technique(v.technique_id).cloud_provider or "aws").lower() for v in selected}
+        log(f"Selected {len(selected)} variant(s) across {', '.join(sorted(selected_clouds))} x {repetitions} repetition(s).")
 
         bound = settings.get_resources()
         thresholds = settings.get_thresholds()
         _, lab_session, region, profile = resolve_sessions(bound.region)
         session = None
         account_id = "123456789012"
-
-        if not synthetic:
-            if not lab_session.has_credentials():
+        if synthetic:
+            if selected_clouds == {"gcp"}:
+                account_id = bound.gcp_project_id or "is-gcp-lab-project"
+                region = bound.gcp_region or "us-central1"
+            elif selected_clouds == {"azure"}:
+                account_id = bound.azure_subscription_id or "00000000-0000-0000-0000-000000000001"
+                region = bound.azure_location or "eastus"
+        else:
+            if "aws" in selected_clouds and not lab_session.has_credentials():
                 raise RuntimeError("No active AWS session found. Connect an AWS account before launching a live campaign.")
+            if selected_clouds - {"aws"}:
+                non_aws = ", ".join(sorted(selected_clouds - {"aws"})).upper()
+                raise RuntimeError(
+                    f"Live attack execution is implemented for AWS sandboxes; selected {non_aws} techniques "
+                    "should use Synthetic Rehearsal, Live SIEM Log Pull, or Closed-Loop Engine."
+                )
             session = lab_session
             account_id = lab_session.account_id()
             log(f"Live session authenticated -> Account {account_id} ({region})")

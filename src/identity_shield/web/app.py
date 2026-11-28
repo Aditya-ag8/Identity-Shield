@@ -234,17 +234,29 @@ async def api_disconnect_azure(_request: Request) -> JSONResponse:
     return JSONResponse(service.disconnect_azure())
 
 
-async def api_lab_doctor(_request: Request) -> JSONResponse:
+async def api_lab_doctor(request: Request) -> JSONResponse:
     try:
-        res = await asyncio.to_thread(service.run_lab_doctor)
+        payload: dict[str, Any] = {}
+        try:
+            payload = await _body(request)
+        except Exception:
+            payload = {}
+        cp = str(request.query_params.get("cloud_provider") or payload.get("cloud_provider") or "all")
+        res = await asyncio.to_thread(service.run_lab_doctor, cp)
         return JSONResponse(res)
     except Exception as exc:  # noqa: BLE001
         return _json_error(exc, 500)
 
 
-async def api_lab_census(_request: Request) -> JSONResponse:
+async def api_lab_census(request: Request) -> JSONResponse:
     try:
-        res = await asyncio.to_thread(service.run_live_resource_probe)
+        payload: dict[str, Any] = {}
+        try:
+            payload = await _body(request)
+        except Exception:
+            payload = {}
+        cp = str(request.query_params.get("cloud_provider") or payload.get("cloud_provider") or "aws")
+        res = await asyncio.to_thread(service.run_live_resource_probe, cp)
         return JSONResponse(res)
     except Exception as exc:  # noqa: BLE001
         return _json_error(exc, 500)
@@ -353,6 +365,7 @@ async def api_variants_generate(request: Request) -> JSONResponse:
             master_seed=int(payload.get("master_seed") or 2026),
             holdout_per_technique=int(payload.get("holdout_per_technique") or 3),
             include_pairwise=bool(payload.get("include_pairwise", True)),
+            include_multicloud=bool(payload.get("include_multicloud", True)),
         )
         return JSONResponse(res)
     except Exception as exc:  # noqa: BLE001

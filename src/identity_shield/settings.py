@@ -96,8 +96,9 @@ class ThresholdConfig:
 
 @dataclass
 class ResourceBinding:
-    """Bound target AWS resources for live simulation & telemetry collection."""
+    """Bound target AWS, GCP, and Azure resources for live simulation & SIEM collection."""
 
+    # AWS targets
     lab_name: str = "identity-shield"
     region: str = "eu-west-1"
     data_bucket: str = "is-lab-crown-jewels"
@@ -107,6 +108,23 @@ class ResourceBinding:
     test_user_name: str = "is-test-user"
     admin_role_name: str = "is-admin-role"
     instance_id: str = ""
+    # GCP targets
+    gcp_project_id: str = ""
+    gcp_region: str = "us-central1"
+    gcp_bucket: str = ""
+    gcp_object_key: str = "finance/q4.csv"
+    gcp_secret_name: str = ""
+    gcp_service_account: str = ""
+    gcp_log_sink: str = "identity-shield-audit-sink"
+    # Azure targets
+    azure_subscription_id: str = ""
+    azure_location: str = "eastus"
+    azure_resource_group: str = "rg-identity-shield-lab"
+    azure_key_vault: str = ""
+    azure_secret_name: str = "lab-secret"
+    azure_storage_account: str = ""
+    azure_vm_name: str = ""
+    azure_spn_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -126,6 +144,21 @@ class ResourceBinding:
             test_user_name=str(data.get("test_user_name") or defaults.test_user_name),
             admin_role_name=str(data.get("admin_role_name") or defaults.admin_role_name),
             instance_id=str(data.get("instance_id") or ""),
+            gcp_project_id=str(data.get("gcp_project_id") or ""),
+            gcp_region=str(data.get("gcp_region") or defaults.gcp_region),
+            gcp_bucket=str(data.get("gcp_bucket") or ""),
+            gcp_object_key=str(data.get("gcp_object_key") or defaults.gcp_object_key),
+            gcp_secret_name=str(data.get("gcp_secret_name") or ""),
+            gcp_service_account=str(data.get("gcp_service_account") or ""),
+            gcp_log_sink=str(data.get("gcp_log_sink") or defaults.gcp_log_sink),
+            azure_subscription_id=str(data.get("azure_subscription_id") or ""),
+            azure_location=str(data.get("azure_location") or defaults.azure_location),
+            azure_resource_group=str(data.get("azure_resource_group") or defaults.azure_resource_group),
+            azure_key_vault=str(data.get("azure_key_vault") or ""),
+            azure_secret_name=str(data.get("azure_secret_name") or defaults.azure_secret_name),
+            azure_storage_account=str(data.get("azure_storage_account") or ""),
+            azure_vm_name=str(data.get("azure_vm_name") or ""),
+            azure_spn_id=str(data.get("azure_spn_id") or ""),
         )
 
 
@@ -533,13 +566,17 @@ def validate_custom_technique(entry: Mapping[str, Any]) -> dict[str, Any]:
     if not name:
         raise ValueError("Attack name is required")
     tactic = str(entry.get("tactic") or "discovery").strip() or "discovery"
+    inferred_cloud = "gcp" if ".GCP" in technique_id.upper() else ("azure" if ".AZ" in technique_id.upper() else "aws")
+    cloud_provider = str(entry.get("cloud_provider") or inferred_cloud).strip().lower()
+    if cloud_provider not in {"aws", "gcp", "azure"}:
+        raise ValueError(f"Unsupported cloud_provider {cloud_provider!r}. Expected aws, gcp, or azure.")
 
     event_names = entry.get("event_names") or []
     if isinstance(event_names, str):
         event_names = [item.strip() for item in event_names.split(",") if item.strip()]
     event_names = [str(item).strip() for item in event_names if str(item).strip()]
     if not event_names:
-        raise ValueError("At least one CloudTrail event name is required (e.g. DescribeVpcs)")
+        raise ValueError("At least one audit event / operation name is required (e.g. DescribeVpcs, CreateServiceAccountKey, or SecretGet)")
 
     required_actions = entry.get("required_actions") or []
     if isinstance(required_actions, str):
@@ -560,17 +597,23 @@ def validate_custom_technique(entry: Mapping[str, Any]) -> dict[str, Any]:
 
     # Convenience shorthand if single service/operation supplied
     if not api_calls and entry.get("service") and entry.get("operation"):
+        svc_val = str(entry["service"]).strip()
         api_calls.append(
             {
-                "service": str(entry["service"]).strip().lower(),
+                "service": svc_val.lower() if cloud_provider != "azure" else svc_val,
                 "operation": str(entry["operation"]).strip(),
                 "kwargs": dict(entry.get("kwargs") or {}),
             }
         )
 
     if not api_calls:
-        # Derive conservative read-only fallback call if user only declared event_names
-        api_calls.append({"service": "sts", "operation": "get_caller_identity", "kwargs": {}})
+        # Derive conservative fallback call appropriate for the target cloud if only event_names supplied
+        if cloud_provider == "gcp":
+            api_calls.append({"service": str(entry.get("service") or "iam.googleapis.com").strip(), "operation": event_names[0], "kwargs": {}})
+        elif cloud_provider == "azure":
+            api_calls.append({"service": str(entry.get("service") or "Microsoft.Authorization").strip(), "operation": event_names[0], "kwargs": {}})
+        else:
+            api_calls.append({"service": "sts", "operation": "get_caller_identity", "kwargs": {}})
 
     if not required_actions and api_calls:
         required_actions = [f"{c['service']}:{c['operation']}" for c in api_calls]
@@ -590,12 +633,14 @@ def validate_custom_technique(entry: Mapping[str, Any]) -> dict[str, Any]:
         if v
     }
 
+    default_exec = "custom_boto3" if cloud_provider == "aws" else f"{cloud_provider}_synthetic"
     return {
         "technique_id": technique_id,
+        "cloud_provider": cloud_provider,
         "name": name,
         "tactic": tactic,
-        "executor": str(entry.get("executor") or "custom_boto3"),
-        "executor_ref": str(entry.get("executor_ref") or "identity_shield.runner.executors.custom_api"),
+        "executor": str(entry.get("executor") or default_exec),
+        "executor_ref": str(entry.get("executor_ref") or ("identity_shield.runner.executors.custom_api" if cloud_provider == "aws" else "")),
         "event_names": event_names,
         "requires_data_events": bool(entry.get("requires_data_events", False)),
         "required_actions": required_actions,

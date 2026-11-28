@@ -91,6 +91,46 @@ def insert_events(
     rows: list[tuple[Any, ...]] = []
     attributed = 0
     for event in events:
+        explicit_cp = str(event.get("cloudProvider") or "").strip().lower()
+        if explicit_cp in {"gcp", "azure"}:
+            from identity_shield.clouds import detect_and_normalize_audit_payload
+
+            canon_list = detect_and_normalize_audit_payload(event, cloud_provider=explicit_cp)
+            if canon_list:
+                cev = canon_list[0]
+                sigma_doc = cev.to_sigma_event()
+                ev_time = cev.event_time
+                event_trial = trial_id
+                if only_between and not (only_between[0] <= ev_time <= only_between[1]):
+                    event_trial = None
+                if event_trial == trial_id and trial_id is not None:
+                    attributed += 1
+                elif trial_id is None:
+                    attributed += 1
+                rows.append(
+                    (
+                        cev.event_id,
+                        event_trial,
+                        fixture_key,
+                        cev.cloud_provider,
+                        cev.account_scope,
+                        cev.source_type,
+                        cev.schema_version,
+                        ev_time,
+                        received,
+                        sigma_doc.get("eventSource"),
+                        cev.operation,
+                        cev.region,
+                        cev.source_ip,
+                        cev.user_agent,
+                        cev.principal_type,
+                        cev.principal,
+                        str(cev.request_metadata.get("error_code") or "") or None,
+                        json.dumps(sigma_doc, ensure_ascii=False, sort_keys=True),
+                    )
+                )
+                continue
+
         row = normalize(event)
         event_trial = trial_id
         if only_between and not (only_between[0] <= row.event_time <= only_between[1]):
@@ -104,6 +144,10 @@ def insert_events(
                 row.event_id,
                 event_trial,
                 fixture_key,
+                "aws",
+                str(event.get("recipientAccountId") or ""),
+                "aws_cloudtrail",
+                1,
                 row.event_time,
                 received,
                 row.event_source,
@@ -121,13 +165,17 @@ def insert_events(
         return 0
     conn.executemany(
         """
-        INSERT INTO event (event_id, trial_id, fixture_key, event_time, received_at,
+        INSERT INTO event (event_id, trial_id, fixture_key, cloud_provider, account_scope,
+                           source_type, schema_version, event_time, received_at,
                            event_source, event_name, aws_region, source_ip,
                            user_agent, user_identity_type, user_identity_arn,
                            error_code, raw)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(event_id) DO UPDATE SET
             trial_id=COALESCE(event.trial_id, excluded.trial_id),
+            cloud_provider=excluded.cloud_provider,
+            account_scope=excluded.account_scope,
+            source_type=excluded.source_type,
             received_at=MIN(event.received_at, excluded.received_at)
         """,
         rows,

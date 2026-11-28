@@ -74,6 +74,7 @@ class Technique:
     api_calls: tuple[Mapping[str, Any], ...] = ()
     custom: bool = False
     enabled: bool = True
+    cloud_provider: str = "aws"
 
     def is_allowed(self, factor: str, level: str) -> bool:
         return level not in self.excluded_levels.get(factor, ())
@@ -192,6 +193,11 @@ def _parse_technique_entry(entry: Mapping[str, Any], *, custom: bool = False, en
         for call in (entry.get("api_calls") or ())
         if isinstance(call, Mapping)
     )
+    if not api_calls and entry.get("service"):
+        first_ev = str((entry.get("event_names") or [""])[0])
+        api_calls = ({"service": str(entry["service"]), "operation": first_ev, "kwargs": {}},)
+    inferred_cp = "gcp" if ".GCP" in technique_id.upper() else ("azure" if ".AZ" in technique_id.upper() else "aws")
+    cloud_provider = str(entry.get("cloud_provider") or inferred_cp).strip().lower()
 
     return Technique(
         technique_id=technique_id,
@@ -213,6 +219,7 @@ def _parse_technique_entry(entry: Mapping[str, Any], *, custom: bool = False, en
         api_calls=api_calls,
         custom=custom,
         enabled=enabled,
+        cloud_provider=cloud_provider,
     )
 
 
@@ -221,11 +228,17 @@ def load_techniques(
     *,
     include_overrides: bool = True,
     include_disabled: bool = False,
+    include_multicloud: bool = False,
 ) -> tuple[Technique, ...]:
     document = _read_yaml(Path(path) if path else config.TECHNIQUES_YAML)
-    raw = document.get("techniques")
-    if not isinstance(raw, list) or not raw:
+    raw = list(document.get("techniques") or [])
+    if not raw:
         raise CatalogueError("techniques.yaml: 'techniques' must be a non-empty list")
+
+    if path is None and include_multicloud and config.MULTICLOUD_TECHNIQUES_YAML.is_file():
+        mc_doc = yaml.safe_load(config.MULTICLOUD_TECHNIQUES_YAML.read_text(encoding="utf-8")) or {}
+        if isinstance(mc_doc, Mapping) and isinstance(mc_doc.get("techniques"), list):
+            raw.extend(mc_doc["techniques"])
 
     disabled: set[str] = set()
     custom_entries: list[Mapping[str, Any]] = []
@@ -333,12 +346,14 @@ def load_catalogue(
     *,
     include_overrides: bool = True,
     include_disabled: bool = False,
+    include_multicloud: bool = False,
 ) -> Catalogue:
     factors = load_factors(factors_path)
     techniques = load_techniques(
         techniques_path,
         include_overrides=include_overrides,
         include_disabled=include_disabled,
+        include_multicloud=include_multicloud,
     )
     document = _read_yaml(Path(techniques_path) if techniques_path else config.TECHNIQUES_YAML)
     catalogue = Catalogue(

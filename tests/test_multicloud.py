@@ -1151,3 +1151,135 @@ def test_multicloud_live_connections_siem_pull_and_census(mc_env, monkeypatch):
         assert "stprodaudit.blob.core.windows.net" in az_arch["uri"]
     finally:
         settings.RUNTIME_SESSION.clear()
+
+
+def test_multicloud_lab_attacks_variants_and_campaigns_parity(mc_env, monkeypatch, capsys):
+    """Verify 3-cloud parity across Lab Resources, Doctor, Discover, Attacks, Variants, and Campaigns."""
+    import time
+    from identity_shield import service
+    from identity_shield.clouds import connect as mc_conn
+
+    variants_dir = mc_env["tmp"] / "variants"
+    variants_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "VARIANTS_DIR", variants_dir)
+    monkeypatch.setenv("IDENTITY_SHIELD_VARIANTS_DIR", str(variants_dir))
+    settings.RUNTIME_SESSION.clear()
+
+    tok = web_app.get_session_token()
+    hdrs = {"x-identity-shield-token": tok}
+
+    # Connect mock GCP + Azure runtime sessions cleanly (RAM only)
+    def fake_http(method: str, url: str, headers=None, body=None):
+        if "tokeninfo" in url:
+            return 200, {"email": "secops@prod.iam.gserviceaccount.com", "expires_in": "3600"}
+        if "cloudresourcemanager.googleapis.com/v1/projects" in url:
+            return 200, {"projects": [{"projectId": "prod-gcp-101"}]}
+        if "storage.googleapis.com/storage/v1/b" in url:
+            return 200, {"items": [{"name": "gcp-crown-bucket"}]}
+        if "iam.googleapis.com" in url:
+            return 200, {"accounts": [{"email": "app@prod-gcp-101.iam.gserviceaccount.com", "displayName": "App SA"}]}
+        if "secretmanager.googleapis.com" in url:
+            return 200, {"secrets": [{"name": "projects/prod-gcp-101/secrets/prod-api-key"}]}
+        if "logging.googleapis.com" in url and "/sinks" in url:
+            return 200, {"sinks": [{"name": "org-siem-sink", "destination": "storage.googleapis.com/gcp-crown-bucket"}]}
+        if "login.microsoftonline.com" in url:
+            return 200, {"access_token": "az-arm-tok", "expires_in": 3600}
+        if "management.azure.com/subscriptions" in url and "/providers/" not in url and "/resourcegroups" not in url:
+            return 200, {"value": [{"subscriptionId": "sub-1111-2222", "displayName": "Prod Sub", "state": "Enabled"}]}
+        if "/providers/Microsoft.KeyVault/vaults" in url:
+            return 200, {"value": [{"name": "kv-prod-01", "id": "/subscriptions/sub-1111-2222/resourceGroups/rg-sec/providers/Microsoft.KeyVault/vaults/kv-prod-01", "location": "eastus"}]}
+        if "/resourcegroups" in url:
+            return 200, {"value": [{"name": "rg-sec", "location": "eastus"}]}
+        if "graph.microsoft.com" in url:
+            return 200, {"value": [{"appId": "app-1", "displayName": "Security App"}]}
+        return 200, {"value": []}
+
+    monkeypatch.setattr(mc_conn, "_default_https_json", fake_http)
+    try:
+        assert _raw_asgi("POST", "/api/connect/gcp", payload={"auth_mode": "in_memory_token", "project_id": "prod-gcp-101", "access_token": "ya29.test"}, headers=hdrs).status_code == 200
+        assert _raw_asgi("POST", "/api/connect/azure", payload={"auth_mode": "service_principal", "tenant_id": "ten-1", "client_id": "app-1", "client_secret": "sec-1"}, headers=hdrs).status_code == 200
+
+        # 1. Bind & CLI-bind GCP + Azure target resources
+        r_res = _raw_asgi(
+            "POST",
+            "/api/lab/resources",
+            payload={"gcp_project_id": "prod-gcp-101", "gcp_bucket": "gcp-crown-bucket", "azure_subscription_id": "sub-1111-2222", "azure_key_vault": "kv-prod-01"},
+            headers=hdrs,
+        )
+        assert r_res.status_code == 200
+        assert r_res.json()["resources"]["gcp_bucket"] == "gcp-crown-bucket"
+        assert ops_cli.config_main(["bind", "--gcp-secret", "prod-api-key", "--azure-rg", "rg-sec"]) == 0
+        _ = capsys.readouterr()
+        assert settings.get_resources().gcp_secret_name == "prod-api-key"
+        assert settings.get_resources().azure_resource_group == "rg-sec"
+
+        # 2. Lab Doctor + Discover work independently for GCP and Azure
+        doc_gcp = _raw_asgi("POST", "/api/lab/doctor", payload={"cloud_provider": "gcp"}, headers=hdrs)
+        doc_az = _raw_asgi("POST", "/api/lab/doctor", payload={"cloud_provider": "azure"}, headers=hdrs)
+        doc_all = _raw_asgi("POST", "/api/lab/doctor", payload={"cloud_provider": "all"}, headers=hdrs)
+        assert doc_gcp.status_code == 200 and doc_gcp.json()["ok"] is True
+        assert doc_az.status_code == 200 and doc_az.json()["ok"] is True
+        assert "gcp" in doc_all.json()["by_cloud"] and "azure" in doc_all.json()["by_cloud"]
+
+        disc_gcp = _raw_asgi("POST", "/api/lab/census", payload={"cloud_provider": "gcp"}, headers=hdrs)
+        disc_az = _raw_asgi("POST", "/api/lab/census", payload={"cloud_provider": "azure"}, headers=hdrs)
+        assert disc_gcp.status_code == 200 and disc_gcp.json()["inventory"]["buckets"][0]["name"] == "gcp-crown-bucket"
+        assert disc_az.status_code == 200 and disc_az.json()["inventory"]["key_vaults"][0]["name"] == "kv-prod-01"
+
+        # 3. Custom GCP attack generates 5-factor variants & keeps default load_catalogue AWS-8 clean when include_multicloud=False
+        r_add = _raw_asgi(
+            "POST",
+            "/api/attacks",
+            payload={
+                "cloud_provider": "gcp",
+                "technique_id": "T1555.GCP09",
+                "name": "Custom GCP Secret Grab",
+                "tactic": "credential-access",
+                "service": "secretmanager.googleapis.com",
+                "operation": "AccessSecretVersion",
+                "event_names": "google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion",
+                "sync_variants": True,
+            },
+            headers=hdrs,
+        )
+        assert r_add.status_code == 200, r_add.text
+        var_gcp = _raw_asgi("GET", "/api/variants?cloud_provider=gcp&limit=200", headers=hdrs)
+        var_az = _raw_asgi("GET", "/api/variants?cloud_provider=azure&limit=200", headers=hdrs)
+        assert var_gcp.status_code == 200 and any(v["technique_id"] == "T1555.GCP09" for v in var_gcp.json()["variants"])
+        assert var_az.status_code == 200 and any(v["technique_id"] == "T1555.AZ06" for v in var_az.json()["variants"])
+        # Built-in AWS-only load_catalogue preserves its 8 core techniques cleanly
+        aws_only_ids = {t.technique_id for t in load_catalogue(include_overrides=False).techniques}
+        assert len(aws_only_ids) == 8
+
+        # 4. Run Synthetic Multi-Cloud Campaign for GCP + Azure and verify SQLite events + Sigma detections + Analytics
+        r_camp = _raw_asgi(
+            "POST",
+            "/api/campaigns/run",
+            payload={
+                "synthetic": True,
+                "cloud_provider": "all",
+                "techniques": ["T1098.GCP01", "T1555.AZ06"],
+                "sets": ["baseline", "ofat"],
+                "ruleset": "multicloud-v1",
+            },
+            headers=hdrs,
+        )
+        assert r_camp.status_code == 200, r_camp.text
+        job_id = r_camp.json()["job_id"]
+        job = {}
+        for _ in range(80):
+            job = _raw_asgi("GET", f"/api/jobs/{job_id}", headers=hdrs).json()
+            if job.get("status") != "running":
+                break
+            time.sleep(0.05)
+        assert job.get("status") == "completed", job
+
+        logs_gcp = _raw_asgi("GET", "/api/logs?cloud_provider=gcp&alerts_only=true", headers=hdrs).json()
+        logs_az = _raw_asgi("GET", "/api/logs?cloud_provider=azure&alerts_only=true", headers=hdrs).json()
+        assert len(logs_gcp["events"]) >= 1
+        assert len(logs_az["events"]) >= 1
+
+        an_gcp = _raw_asgi("GET", "/api/analytics?ruleset=multicloud-v1&cloud_provider=gcp", headers=hdrs).json()
+        assert an_gcp["summary"]["overall"]["detected"] >= 1
+    finally:
+        settings.RUNTIME_SESSION.clear()

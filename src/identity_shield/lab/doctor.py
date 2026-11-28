@@ -164,5 +164,172 @@ def summarise(report: DoctorReport) -> str:
     return "\n".join(lines)
 
 
+def run_gcp_doctor(
+    *,
+    connection_status: dict[str, Any] | None = None,
+    bound: dict[str, Any] | None = None,
+) -> DoctorReport:
+    """Environment preflight checks for Google Cloud (GCP) Cloud Audit & Lab targets."""
+    import shutil
+
+    st = dict(connection_status or {})
+    bnd = dict(bound or {})
+    desc = dict(st.get("descriptor") or {})
+    ident = dict(st.get("identity") or {})
+    region = str(bnd.get("gcp_region") or desc.get("region") or "us-central1")
+    checks: list[Check] = []
+
+    gcloud_bin = shutil.which("gcloud")
+    if gcloud_bin:
+        checks.append(Check(name="gcloud cli", status="ok", detail=gcloud_bin))
+    else:
+        checks.append(
+            Check(
+                name="gcloud cli",
+                status="warn",
+                detail="gcloud CLI not found on PATH (Service Account JSON / Workload Identity / Token modes still work via HTTPS REST)",
+                remedy="Install Google Cloud SDK or connect via Service Account JSON / Token",
+            )
+        )
+
+    if st.get("connected"):
+        principal = str(ident.get("principal") or desc.get("service_account") or "authenticated")
+        mode = str(desc.get("auth_mode") or "gcloud_adc")
+        checks.append(Check(name="gcp session", status="ok", detail=f"{principal} ({mode})"))
+    else:
+        checks.append(
+            Check(
+                name="gcp session",
+                status="fail",
+                detail="GCP session offline",
+                remedy="Connect GCP in Connections (gcloud ADC, SA Impersonation, SA JSON, Workload Identity, or Access Token)",
+            )
+        )
+
+    scope = str(desc.get("scope") or "single_project")
+    proj = str(bnd.get("gcp_project_id") or desc.get("project_id") or ident.get("project_id") or "")
+    org_id = str(desc.get("organization_id") or ident.get("organization_id") or "")
+    if scope == "organization":
+        if org_id:
+            checks.append(Check(name="gcp org scope", status="ok", detail=f"organization/{org_id}"))
+        else:
+            checks.append(
+                Check(
+                    name="gcp org scope",
+                    status="warn",
+                    detail="Organization scope chosen but organization_id not set",
+                    remedy="Provide GCP Organization ID in Connections or bind a Project ID in Lab Resources",
+                )
+            )
+    elif proj:
+        checks.append(Check(name="gcp target project", status="ok", detail=f"project={proj} ({region})"))
+    else:
+        checks.append(
+            Check(
+                name="gcp target project",
+                status="fail",
+                detail="No GCP project bound",
+                remedy="Enter GCP Project ID in Lab Resources or connect GCP with a project ID",
+            )
+        )
+
+    log_sink = str(bnd.get("gcp_log_sink") or "identity-shield-audit-sink")
+    bucket = str(bnd.get("gcp_bucket") or "")
+    checks.append(
+        Check(
+            name="gcp siem & targets",
+            status="ok" if st.get("connected") else "warn",
+            detail=f"log_sink={log_sink}" + (f", bucket={bucket}" if bucket else " (no GCS bucket bound yet)"),
+            remedy="" if st.get("connected") else "Connect GCP then click Discover GCP to inspect sinks, buckets, secrets, and service accounts",
+        )
+    )
+
+    return DoctorReport(generated_at=utc_now(), region=region, checks=tuple(checks))
+
+
+def run_azure_doctor(
+    *,
+    connection_status: dict[str, Any] | None = None,
+    bound: dict[str, Any] | None = None,
+) -> DoctorReport:
+    """Environment preflight checks for Microsoft Azure & Entra ID SIEM/Lab targets."""
+    import shutil
+
+    st = dict(connection_status or {})
+    bnd = dict(bound or {})
+    desc = dict(st.get("descriptor") or {})
+    ident = dict(st.get("identity") or {})
+    region = str(bnd.get("azure_location") or desc.get("location") or "eastus")
+    checks: list[Check] = []
+
+    az_bin = shutil.which("az")
+    if az_bin:
+        checks.append(Check(name="az cli", status="ok", detail=az_bin))
+    else:
+        checks.append(
+            Check(
+                name="az cli",
+                status="warn",
+                detail="az CLI not found on PATH (Service Principal / OIDC / Token REST modes still work directly)",
+                remedy="Install Azure CLI or connect via App Registration Client Secret / OIDC / Token",
+            )
+        )
+
+    if st.get("connected"):
+        principal = str(ident.get("principal") or desc.get("client_id") or "authenticated")
+        mode = str(desc.get("auth_mode") or "az_cli")
+        checks.append(Check(name="azure session", status="ok", detail=f"{principal} ({mode})"))
+    else:
+        checks.append(
+            Check(
+                name="azure session",
+                status="fail",
+                detail="Azure / Entra session offline",
+                remedy="Connect Azure in Connections (az CLI, Service Principal, OIDC, Managed Identity, or Access Token)",
+            )
+        )
+
+    scope = str(desc.get("scope") or "single_subscription")
+    sub_id = str(bnd.get("azure_subscription_id") or desc.get("subscription_id") or ident.get("subscription_id") or "")
+    mg_id = str(desc.get("management_group_id") or ident.get("management_group_id") or "")
+    tenant_id = str(desc.get("tenant_id") or ident.get("tenant_id") or "")
+    if scope == "organization":
+        if mg_id or tenant_id:
+            checks.append(Check(name="azure org scope", status="ok", detail=f"tenant={tenant_id or 'resolved'}, mg={mg_id or 'root'}"))
+        else:
+            checks.append(
+                Check(
+                    name="azure org scope",
+                    status="warn",
+                    detail="Organization / Tenant scope chosen without tenant_id or management_group_id",
+                    remedy="Supply Azure Tenant ID / Management Group in Connections",
+                )
+            )
+    elif sub_id:
+        checks.append(Check(name="azure subscription", status="ok", detail=f"sub={sub_id} ({region})"))
+    else:
+        checks.append(
+            Check(
+                name="azure subscription",
+                status="fail",
+                detail="No Azure subscription bound",
+                remedy="Enter Subscription ID in Lab Resources or connect Azure",
+            )
+        )
+
+    rg = str(bnd.get("azure_resource_group") or "rg-identity-shield-lab")
+    kv = str(bnd.get("azure_key_vault") or "")
+    checks.append(
+        Check(
+            name="azure siem & targets",
+            status="ok" if st.get("connected") else "warn",
+            detail=f"resource_group={rg}" + (f", key_vault={kv}" if kv else " (no Key Vault bound yet)"),
+            remedy="" if st.get("connected") else "Connect Azure then click Discover Azure to inspect Key Vaults, storage accounts, VMs, and subscriptions",
+        )
+    )
+
+    return DoctorReport(generated_at=utc_now(), region=region, checks=tuple(checks))
+
+
 def as_dict(report: DoctorReport) -> dict[str, Any]:
     return report.to_dict()
